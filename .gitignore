@@ -1,0 +1,12 @@
+.pio/
+.vscode/
+build/
+sdkconfig
+sdkconfig.old
+*.bin
+*.elf
+*.map
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
