@@ -4,6 +4,8 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 
 ## Unreleased
 
+## v0.1.0 — 2026-08-25
+
 ### Added
 - ESP-IDF 5.5.4 ESP32-C5 direct promiscuous receive-metadata inventory with
   bounded physical evidence on both assigned bands
@@ -24,15 +26,14 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 - AGPL-3.0 license
 
 ### Changed
-- v0.1.0 C5 Hardware Bring-Up roadmap work completed; release/tag remains
-  intentionally unpublished at development version `0.1.0-dev`
+- v0.1.0 C5 Hardware Bring-Up roadmap work completed and prepared for release
 - ESP32-C5 channel set/get control, passive callback continuity across channel
   transitions, and clean shutdown physically validated on both C5 boards
 - ESP32-C5 promiscuous receive callbacks and clean shutdown physically validated
   on C5 #1 at 2.4 GHz and C5 #2 at 5 GHz
 - C5 #2 5 GHz Wi-Fi initialization and RF operation physically validated
 - C5 #1 2.4 GHz Wi-Fi initialization and RF operation physically validated
-- Development version advanced to `0.1.0-dev`; v0.1.0 remains in progress
+- Release version finalized as `0.1.0`
 - Project status updated after both ESP32-C5 boards were received and breadboarded
 - Initial build, upload, boot, PSRAM, serial diagnostics, and heartbeat verified on both ESP32-C5 boards
 - PlatformIO/SCons bootloader regeneration failure isolated and bypassed without modifying global packages

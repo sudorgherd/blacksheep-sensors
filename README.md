@@ -8,8 +8,9 @@ This repository contains the sensor-side firmware and development work for **PRO
 attribute discovery is next.**
 
 Repository preparation and planned v0.1.0 hardware bring-up are complete on
-both breadboarded ESP32-C5 development boards. This is a roadmap transition,
-not a tagged release; the repository remains at `0.1.0-dev`.
+both breadboarded ESP32-C5 development boards. The v0.1.0 baseline establishes
+the physically validated C5 hardware and development environment; v0.2.0 will
+evaluate which exposed attributes are useful and reliable for sensing.
 
 Initial hardware development uses two ESP32-C5 boards:
 
