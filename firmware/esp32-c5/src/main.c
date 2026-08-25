@@ -19,11 +19,75 @@
 #include "nvs_flash.h"
 
 #ifndef SENSOR_ROLE
-#ifdef WIFI_VALIDATION_5GHZ
+#if defined(WIFI_PASSIVE_VALIDATION) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_PASSIVE"
+#elif defined(WIFI_PASSIVE_VALIDATION)
+#define SENSOR_ROLE "C5_24GHZ_PASSIVE"
+#elif defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ"
 #else
 #define SENSOR_ROLE "UNASSIGNED"
 #endif
+#endif
+
+#ifdef WIFI_PASSIVE_VALIDATION
+#define PASSIVE_VALIDATION_WINDOW_MS 8000
+#ifdef WIFI_VALIDATION_5GHZ
+#define PASSIVE_VALIDATION_CHANNEL 36
+#else
+#define PASSIVE_VALIDATION_CHANNEL 1
+#endif
+
+typedef struct {
+  volatile uint32_t total;
+  volatile uint32_t management;
+  volatile uint32_t control;
+  volatile uint32_t data;
+  volatile uint32_t total_bytes;
+  volatile uint16_t shortest_frame;
+  volatile uint16_t longest_frame;
+  volatile int8_t weakest_rssi;
+  volatile int8_t strongest_rssi;
+  volatile uint8_t channel;
+} passive_validation_stats_t;
+
+static passive_validation_stats_t passive_stats;
+
+static void passive_rx_callback(void *buffer,
+                                wifi_promiscuous_pkt_type_t packet_type) {
+  const wifi_promiscuous_pkt_t *packet = buffer;
+  const uint16_t frame_length = packet->rx_ctrl.sig_len;
+  const int8_t rssi = packet->rx_ctrl.rssi;
+
+  ++passive_stats.total;
+  passive_stats.total_bytes += frame_length;
+  switch (packet_type) {
+    case WIFI_PKT_MGMT:
+      ++passive_stats.management;
+      break;
+    case WIFI_PKT_CTRL:
+      ++passive_stats.control;
+      break;
+    case WIFI_PKT_DATA:
+      ++passive_stats.data;
+      break;
+    default:
+      break;
+  }
+  if (frame_length < passive_stats.shortest_frame) {
+    passive_stats.shortest_frame = frame_length;
+  }
+  if (frame_length > passive_stats.longest_frame) {
+    passive_stats.longest_frame = frame_length;
+  }
+  if (rssi < passive_stats.weakest_rssi) {
+    passive_stats.weakest_rssi = rssi;
+  }
+  if (rssi > passive_stats.strongest_rssi) {
+    passive_stats.strongest_rssi = rssi;
+  }
+  passive_stats.channel = packet->rx_ctrl.channel;
+}
 #endif
 
 #ifdef WIFI_VALIDATION_5GHZ
@@ -106,8 +170,98 @@ static bool wifi_band_validation(void) {
     return false;
   }
   printf("Wi-Fi regulatory country: US (manual)\n");
+#ifndef WIFI_PASSIVE_VALIDATION
   printf("Wi-Fi scan channels (non-DFS): 36 40 44 48 149 153 157 161 165\n");
 #endif
+#endif
+#ifdef WIFI_PASSIVE_VALIDATION
+  const uint8_t validation_channel = PASSIVE_VALIDATION_CHANNEL;
+  result = esp_wifi_set_channel(validation_channel, WIFI_SECOND_CHAN_NONE);
+  uint8_t effective_channel = 0;
+  wifi_second_chan_t effective_secondary = WIFI_SECOND_CHAN_NONE;
+  if (result == ESP_OK) {
+    result = esp_wifi_get_channel(&effective_channel, &effective_secondary);
+  }
+  if (result != ESP_OK || effective_channel != validation_channel) {
+    printf("Wi-Fi fixed channel: FAIL (%s)\n",
+           result == ESP_OK ? "unexpected channel" : esp_err_to_name(result));
+    return false;
+  }
+
+  passive_stats = (passive_validation_stats_t){
+      .shortest_frame = UINT16_MAX,
+      .weakest_rssi = INT8_MAX,
+      .strongest_rssi = INT8_MIN,
+  };
+  const wifi_promiscuous_filter_t filter = {
+      .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
+                     WIFI_PROMIS_FILTER_MASK_CTRL |
+                     WIFI_PROMIS_FILTER_MASK_DATA,
+  };
+  result = esp_wifi_set_promiscuous_filter(&filter);
+  if (result == ESP_OK) {
+    result = esp_wifi_set_promiscuous_rx_cb(passive_rx_callback);
+  }
+  if (result == ESP_OK) {
+    result = esp_wifi_set_promiscuous(true);
+  }
+  bool promiscuous_enabled = false;
+  if (result == ESP_OK) {
+    result = esp_wifi_get_promiscuous(&promiscuous_enabled);
+  }
+  if (result != ESP_OK || !promiscuous_enabled) {
+    printf("Wi-Fi promiscuous mode: FAIL (%s)\n",
+           result == ESP_OK ? "not enabled" : esp_err_to_name(result));
+    return false;
+  }
+
+  printf("Wi-Fi fixed channel: %u (verified)\n", effective_channel);
+  printf("Wi-Fi promiscuous filter: management control data\n");
+  printf("Wi-Fi promiscuous mode: PASS (enabled)\n");
+  printf("Wi-Fi passive window: %u ms\n", PASSIVE_VALIDATION_WINDOW_MS);
+  fflush(stdout);
+  vTaskDelay(pdMS_TO_TICKS(PASSIVE_VALIDATION_WINDOW_MS));
+
+  result = esp_wifi_set_promiscuous(false);
+  promiscuous_enabled = true;
+  if (result == ESP_OK) {
+    result = esp_wifi_get_promiscuous(&promiscuous_enabled);
+  }
+  if (result != ESP_OK || promiscuous_enabled) {
+    printf("Wi-Fi promiscuous shutdown: FAIL (%s)\n",
+           result == ESP_OK ? "still enabled" : esp_err_to_name(result));
+    return false;
+  }
+  esp_wifi_set_promiscuous_rx_cb(NULL);
+
+  printf("Wi-Fi promiscuous shutdown: PASS\n");
+  printf("Passive callbacks: %" PRIu32 "\n", passive_stats.total);
+  printf("Passive packet classes: management=%" PRIu32
+         " control=%" PRIu32 " data=%" PRIu32 "\n",
+         passive_stats.management, passive_stats.control, passive_stats.data);
+  if (passive_stats.total > 0) {
+    printf("Passive channel/band: %u / %s\n", passive_stats.channel, band_name);
+    printf("Passive RSSI range: %d to %d dBm\n", passive_stats.weakest_rssi,
+           passive_stats.strongest_rssi);
+    printf("Passive frame length range: %u to %u bytes\n",
+           passive_stats.shortest_frame, passive_stats.longest_frame);
+    printf("Passive bytes observed: %" PRIu32 "\n", passive_stats.total_bytes);
+  }
+
+  const bool callbacks_observed = passive_stats.total > 0;
+  result = esp_wifi_stop();
+  if (result == ESP_OK) {
+    result = esp_wifi_deinit();
+  }
+  if (result != ESP_OK) {
+    printf("Wi-Fi shutdown: FAIL (%s)\n", esp_err_to_name(result));
+    return false;
+  }
+  printf("Wi-Fi shutdown: PASS\n");
+  printf("Wi-Fi passive validation: %s\n",
+         callbacks_observed ? "COMPLETE" : "FAIL (no callbacks)");
+  return callbacks_observed;
+#else
   printf("Wi-Fi validation: bounded infrastructure scan starting\n");
   fflush(stdout);
 
@@ -204,6 +358,7 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi validation: COMPLETE\n");
   free(records);
   return true;
+#endif
 }
 
 void app_main(void) {
