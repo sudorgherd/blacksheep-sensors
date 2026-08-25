@@ -4,6 +4,10 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 
 ## Unreleased
 
+### Added
+- Authoritative staged implementation brief for v0.2.0 raw sensor attribute
+  discovery, including parser safety, privacy, test, risk, and acceptance gates
+
 ## v0.1.0 — 2026-08-25
 
 ### Added

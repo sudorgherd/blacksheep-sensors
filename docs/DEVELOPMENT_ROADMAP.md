@@ -80,6 +80,10 @@ No REDLINE integration is required for this milestone.
 
 Determine which observable Wi-Fi attributes are useful and reliably available from the C5 hardware.
 
+The authoritative staged engineering plan, parser safety boundary, attribute
+acceptance framework, and dual-band test matrix are defined in
+[`V0.2.0_IMPLEMENTATION_BRIEF.md`](V0.2.0_IMPLEMENTATION_BRIEF.md).
+
 Initial target attributes include:
 
 * MAC address fields
