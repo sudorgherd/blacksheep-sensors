@@ -1,6 +1,6 @@
 # PROJECT BLACKSHEEP Sensors — Versioned Development Roadmap
 
-**Status:** Early development; v0.1.0 in progress
+**Status:** Early development; v0.1.0 complete, v0.2.0 next
 **Repository:** `sudorgherd/blacksheep-sensors`
 **Initial hardware:** 2× ESP32-C5 development boards
 **Target integration point:** ARGUS REDLINE v1.0
@@ -22,7 +22,7 @@ Following the REDLINE v1.0 release, the C5 sensors will be integrated with a sep
 
 ## v0.1.0 — C5 Hardware Bring-Up
 
-**Status:** In progress
+**Status:** Complete
 
 Completed preparation:
 
@@ -48,6 +48,8 @@ Completed bring-up work:
 * bounded channel selection and deterministic channel hopping verified on C5 #1
   across 2.4 GHz channels 1, 6, and 11 and on C5 #2 across non-DFS 5 GHz
   channels 36, 40, 44, and 48
+* public ESP-IDF 5.5.4 ESP32-C5 promiscuous receive-control metadata inventoried
+  and physically characterized on both assigned bands
 
 PlatformIO's ESP32-C5 SCons integration regenerated the native ESP-IDF
 bootloader and produced an artifact that failed during ROM startup. Selecting
@@ -56,7 +58,9 @@ boards now reach the second-stage bootloader, pass the PSRAM test, print the
 BLACKSHEEP READY banner, and maintain a stable heartbeat. See
 [`V0.1.0_C5_BRINGUP.md`](V0.1.0_C5_BRINGUP.md) for the evidence and workaround.
 
-Metadata characterization remains pending for v0.1.0.
+The planned v0.1.0 bring-up work is complete. The inventory describes what the
+driver exposes; selecting useful and reliable BLACKSHEEP attributes remains
+v0.2.0 work.
 
 Establish the initial ESP32-C5 development environment and verify both boards independently.
 
@@ -68,7 +72,7 @@ Planned work:
 * validate 5 GHz operation — complete
 * confirm promiscuous/passive Wi-Fi observation capability — complete
 * establish basic channel-selection and channel-hopping control — complete
-* characterize available metadata exposed by the ESP32-C5 Wi-Fi subsystem
+* characterize available metadata exposed by the ESP32-C5 Wi-Fi subsystem — complete
 
 No REDLINE integration is required for this milestone.
 

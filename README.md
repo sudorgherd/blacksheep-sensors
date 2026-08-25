@@ -4,10 +4,12 @@ This repository contains the sensor-side firmware and development work for **PRO
 
 ## Current Status
 
-**Early development — v0.1.0 C5 hardware bring-up in progress.**
+**Early development — v0.1.0 C5 hardware bring-up complete; v0.2.0 raw sensor
+attribute discovery is next.**
 
-Repository preparation is complete. Both ESP32-C5 development boards have been
-received and mounted on breadboards; firmware/toolchain bring-up is starting.
+Repository preparation and planned v0.1.0 hardware bring-up are complete on
+both breadboarded ESP32-C5 development boards. This is a roadmap transition,
+not a tagged release; the repository remains at `0.1.0-dev`.
 
 Initial hardware development uses two ESP32-C5 boards:
 
@@ -48,9 +50,9 @@ Additional sensing domains may be added later without requiring the Wi-Fi sensor
 
 ## Development Stage
 
-The repository/bootstrap preparation is complete, and initial ESP32-C5 board
-bring-up is underway. Wi-Fi sensing and hardware validation results will be
-documented only as they are completed.
+The repository/bootstrap preparation and initial ESP32-C5 board bring-up are
+complete. The next milestone evaluates which exposed attributes are useful and
+reliable without yet freezing the final sensor record.
 
 Expect rapid changes while the initial ESP32-C5 hardware is characterized.
 

@@ -5,6 +5,9 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- ESP-IDF 5.5.4 ESP32-C5 direct promiscuous receive-metadata inventory with
+  bounded physical evidence on both assigned bands
+- Dedicated 2.4 GHz and 5 GHz metadata-characterization firmware environments
 - Bounded deterministic channel-selection and channel-hopping validation for
   both C5 band roles
 - Bounded fixed-channel passive/promiscuous receive validation on both C5 band roles
@@ -21,6 +24,8 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 - AGPL-3.0 license
 
 ### Changed
+- v0.1.0 C5 Hardware Bring-Up roadmap work completed; release/tag remains
+  intentionally unpublished at development version `0.1.0-dev`
 - ESP32-C5 channel set/get control, passive callback continuity across channel
   transitions, and clean shutdown physically validated on both C5 boards
 - ESP32-C5 promiscuous receive callbacks and clean shutdown physically validated

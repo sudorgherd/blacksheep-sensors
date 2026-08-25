@@ -19,7 +19,11 @@
 #include "nvs_flash.h"
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_CHANNEL_CONTROL_VALIDATION) && \
+#if defined(WIFI_METADATA_CHARACTERIZATION) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_METADATA"
+#elif defined(WIFI_METADATA_CHARACTERIZATION)
+#define SENSOR_ROLE "C5_24GHZ_METADATA"
+#elif defined(WIFI_CHANNEL_CONTROL_VALIDATION) && \
     defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_CHANNEL_CONTROL"
 #elif defined(WIFI_CHANNEL_CONTROL_VALIDATION)
@@ -36,7 +40,8 @@
 #endif
 
 #if defined(WIFI_PASSIVE_VALIDATION) || \
-    defined(WIFI_CHANNEL_CONTROL_VALIDATION)
+    defined(WIFI_CHANNEL_CONTROL_VALIDATION) || \
+    defined(WIFI_METADATA_CHARACTERIZATION)
 #define PASSIVE_VALIDATION_WINDOW_MS 8000
 #define CHANNEL_CONTROL_DWELL_MS 2000
 #ifdef WIFI_VALIDATION_5GHZ
@@ -63,6 +68,35 @@ typedef struct {
 static passive_validation_stats_t passive_stats;
 static portMUX_TYPE passive_stats_lock = portMUX_INITIALIZER_UNLOCKED;
 
+#ifdef WIFI_METADATA_CHARACTERIZATION
+typedef struct {
+  uint32_t rate_values;
+  uint32_t format_values;
+  uint32_t second_channel_values;
+  uint32_t rxmatch_values;
+  uint32_t group_frames;
+  uint32_t he_siga1_nonzero;
+  uint32_t he_siga2_nonzero;
+  uint32_t rxend_success;
+  uint32_t rxend_failure;
+  uint32_t rx_state_success;
+  uint32_t rx_state_failure;
+  uint32_t channel_estimate_valid;
+  uint32_t timestamp_first;
+  uint32_t timestamp_last;
+  int8_t weakest_noise_floor;
+  int8_t strongest_noise_floor;
+  uint16_t shortest_dump;
+  uint16_t longest_dump;
+  uint16_t shortest_sigb;
+  uint16_t longest_sigb;
+  uint16_t shortest_channel_estimate;
+  uint16_t longest_channel_estimate;
+} metadata_characterization_stats_t;
+
+static metadata_characterization_stats_t metadata_stats;
+#endif
+
 static void reset_passive_stats(void) {
   portENTER_CRITICAL(&passive_stats_lock);
   passive_stats = (passive_validation_stats_t){
@@ -70,6 +104,15 @@ static void reset_passive_stats(void) {
       .weakest_rssi = INT8_MAX,
       .strongest_rssi = INT8_MIN,
   };
+#ifdef WIFI_METADATA_CHARACTERIZATION
+  metadata_stats = (metadata_characterization_stats_t){
+      .weakest_noise_floor = INT8_MAX,
+      .strongest_noise_floor = INT8_MIN,
+      .shortest_dump = UINT16_MAX,
+      .shortest_sigb = UINT16_MAX,
+      .shortest_channel_estimate = UINT16_MAX,
+  };
+#endif
   portEXIT_CRITICAL(&passive_stats_lock);
 }
 
@@ -80,6 +123,16 @@ static passive_validation_stats_t snapshot_passive_stats(void) {
   portEXIT_CRITICAL(&passive_stats_lock);
   return snapshot;
 }
+
+#ifdef WIFI_METADATA_CHARACTERIZATION
+static metadata_characterization_stats_t snapshot_metadata_stats(void) {
+  metadata_characterization_stats_t snapshot;
+  portENTER_CRITICAL(&passive_stats_lock);
+  snapshot = metadata_stats;
+  portEXIT_CRITICAL(&passive_stats_lock);
+  return snapshot;
+}
+#endif
 
 static void passive_rx_callback(void *buffer,
                                 wifi_promiscuous_pkt_type_t packet_type) {
@@ -116,6 +169,54 @@ static void passive_rx_callback(void *buffer,
     passive_stats.strongest_rssi = rssi;
   }
   passive_stats.channel = packet->rx_ctrl.channel;
+#ifdef WIFI_METADATA_CHARACTERIZATION
+  const wifi_pkt_rx_ctrl_t *rx = &packet->rx_ctrl;
+  metadata_stats.rate_values |= UINT32_C(1) << rx->rate;
+  metadata_stats.format_values |= UINT32_C(1) << rx->cur_bb_format;
+  if (rx->second < 32) {
+    metadata_stats.second_channel_values |= UINT32_C(1) << rx->second;
+  }
+  metadata_stats.rxmatch_values |=
+      UINT32_C(1) << (rx->rxmatch0 | (rx->rxmatch1 << 1) |
+                     (rx->rxmatch2 << 2) | (rx->rxmatch3 << 3));
+  metadata_stats.group_frames += rx->is_group != 0;
+  metadata_stats.he_siga1_nonzero += rx->he_siga1 != 0;
+  metadata_stats.he_siga2_nonzero += rx->he_siga2 != 0;
+  metadata_stats.rxend_success += rx->rxend_state == 0;
+  metadata_stats.rxend_failure += rx->rxend_state != 0;
+  metadata_stats.rx_state_success += rx->rx_state == 0;
+  metadata_stats.rx_state_failure += rx->rx_state != 0;
+  metadata_stats.channel_estimate_valid +=
+      rx->rx_channel_estimate_info_vld != 0;
+  if (metadata_stats.timestamp_first == 0) {
+    metadata_stats.timestamp_first = rx->timestamp;
+  }
+  metadata_stats.timestamp_last = rx->timestamp;
+  if (rx->noise_floor < metadata_stats.weakest_noise_floor) {
+    metadata_stats.weakest_noise_floor = rx->noise_floor;
+  }
+  if (rx->noise_floor > metadata_stats.strongest_noise_floor) {
+    metadata_stats.strongest_noise_floor = rx->noise_floor;
+  }
+  if (rx->dump_len < metadata_stats.shortest_dump) {
+    metadata_stats.shortest_dump = rx->dump_len;
+  }
+  if (rx->dump_len > metadata_stats.longest_dump) {
+    metadata_stats.longest_dump = rx->dump_len;
+  }
+  if (rx->sigb_len < metadata_stats.shortest_sigb) {
+    metadata_stats.shortest_sigb = rx->sigb_len;
+  }
+  if (rx->sigb_len > metadata_stats.longest_sigb) {
+    metadata_stats.longest_sigb = rx->sigb_len;
+  }
+  if (rx->rx_channel_estimate_len < metadata_stats.shortest_channel_estimate) {
+    metadata_stats.shortest_channel_estimate = rx->rx_channel_estimate_len;
+  }
+  if (rx->rx_channel_estimate_len > metadata_stats.longest_channel_estimate) {
+    metadata_stats.longest_channel_estimate = rx->rx_channel_estimate_len;
+  }
+#endif
   portEXIT_CRITICAL(&passive_stats_lock);
 }
 #endif
@@ -206,7 +307,8 @@ static bool wifi_band_validation(void) {
 #endif
 #endif
 #if defined(WIFI_PASSIVE_VALIDATION) || \
-    defined(WIFI_CHANNEL_CONTROL_VALIDATION)
+    defined(WIFI_CHANNEL_CONTROL_VALIDATION) || \
+    defined(WIFI_METADATA_CHARACTERIZATION)
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   static const uint8_t control_channels[] = {CHANNEL_CONTROL_CHANNELS};
 #else
@@ -341,6 +443,48 @@ static bool wifi_band_validation(void) {
     printf("Passive bytes observed: %" PRIu32 "\n", summary.total_bytes);
   }
   const bool callbacks_observed = summary.total > 0;
+#ifdef WIFI_METADATA_CHARACTERIZATION
+  const metadata_characterization_stats_t metadata = snapshot_metadata_stats();
+  printf("Metadata callback class mask: management=%s control=%s data=%s\n",
+         summary.management > 0 ? "observed" : "not observed",
+         summary.control > 0 ? "observed" : "not observed",
+         summary.data > 0 ? "observed" : "not observed");
+  if (summary.total > 0) {
+    printf("Metadata rate value mask: 0x%08" PRIx32 "\n",
+           metadata.rate_values);
+    printf("Metadata baseband format mask: 0x%08" PRIx32 "\n",
+           metadata.format_values);
+    printf("Metadata primary channel: %u\n", summary.channel);
+    printf("Metadata secondary-channel value mask: 0x%08" PRIx32 "\n",
+           metadata.second_channel_values);
+    printf("Metadata noise-floor range: %d to %d dBm\n",
+           metadata.weakest_noise_floor, metadata.strongest_noise_floor);
+    printf("Metadata timestamp first/last: %" PRIu32 "/%" PRIu32 " us\n",
+           metadata.timestamp_first, metadata.timestamp_last);
+    printf("Metadata dump-length range: %u to %u bytes\n",
+           metadata.shortest_dump, metadata.longest_dump);
+    printf("Metadata SIG-B length range: %u to %u\n",
+           metadata.shortest_sigb, metadata.longest_sigb);
+    printf("Metadata channel-estimate length range: %u to %u; valid=%" PRIu32
+           "/%" PRIu32 "\n",
+           metadata.shortest_channel_estimate,
+           metadata.longest_channel_estimate,
+           metadata.channel_estimate_valid, summary.total);
+    printf("Metadata group-address indication: %" PRIu32 "/%" PRIu32 "\n",
+           metadata.group_frames, summary.total);
+    printf("Metadata interface-match value mask: 0x%08" PRIx32 "\n",
+           metadata.rxmatch_values);
+    printf("Metadata raw SIG words nonzero: SIGA1=%" PRIu32
+           " SIGA2=%" PRIu32 "\n",
+           metadata.he_siga1_nonzero, metadata.he_siga2_nonzero);
+    printf("Metadata receive-end state: success=%" PRIu32
+           " failure=%" PRIu32 "\n",
+           metadata.rxend_success, metadata.rxend_failure);
+    printf("Metadata receive state: success=%" PRIu32 " failure=%" PRIu32
+           "\n",
+           metadata.rx_state_success, metadata.rx_state_failure);
+  }
+#endif
 #endif
   result = esp_wifi_stop();
   if (result == ESP_OK) {
@@ -353,6 +497,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_METADATA_CHARACTERIZATION)
+  printf("Wi-Fi metadata characterization: %s\n",
 #else
   printf("Wi-Fi passive validation: %s\n",
 #endif
