@@ -19,7 +19,12 @@
 #include "nvs_flash.h"
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_PASSIVE_VALIDATION) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_CHANNEL_CONTROL_VALIDATION) && \
+    defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_CHANNEL_CONTROL"
+#elif defined(WIFI_CHANNEL_CONTROL_VALIDATION)
+#define SENSOR_ROLE "C5_24GHZ_CHANNEL_CONTROL"
+#elif defined(WIFI_PASSIVE_VALIDATION) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_PASSIVE"
 #elif defined(WIFI_PASSIVE_VALIDATION)
 #define SENSOR_ROLE "C5_24GHZ_PASSIVE"
@@ -30,12 +35,16 @@
 #endif
 #endif
 
-#ifdef WIFI_PASSIVE_VALIDATION
+#if defined(WIFI_PASSIVE_VALIDATION) || \
+    defined(WIFI_CHANNEL_CONTROL_VALIDATION)
 #define PASSIVE_VALIDATION_WINDOW_MS 8000
+#define CHANNEL_CONTROL_DWELL_MS 2000
 #ifdef WIFI_VALIDATION_5GHZ
 #define PASSIVE_VALIDATION_CHANNEL 36
+#define CHANNEL_CONTROL_CHANNELS 36, 40, 44, 48
 #else
 #define PASSIVE_VALIDATION_CHANNEL 1
+#define CHANNEL_CONTROL_CHANNELS 1, 6, 11
 #endif
 
 typedef struct {
@@ -52,6 +61,25 @@ typedef struct {
 } passive_validation_stats_t;
 
 static passive_validation_stats_t passive_stats;
+static portMUX_TYPE passive_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+
+static void reset_passive_stats(void) {
+  portENTER_CRITICAL(&passive_stats_lock);
+  passive_stats = (passive_validation_stats_t){
+      .shortest_frame = UINT16_MAX,
+      .weakest_rssi = INT8_MAX,
+      .strongest_rssi = INT8_MIN,
+  };
+  portEXIT_CRITICAL(&passive_stats_lock);
+}
+
+static passive_validation_stats_t snapshot_passive_stats(void) {
+  passive_validation_stats_t snapshot;
+  portENTER_CRITICAL(&passive_stats_lock);
+  snapshot = passive_stats;
+  portEXIT_CRITICAL(&passive_stats_lock);
+  return snapshot;
+}
 
 static void passive_rx_callback(void *buffer,
                                 wifi_promiscuous_pkt_type_t packet_type) {
@@ -59,6 +87,7 @@ static void passive_rx_callback(void *buffer,
   const uint16_t frame_length = packet->rx_ctrl.sig_len;
   const int8_t rssi = packet->rx_ctrl.rssi;
 
+  portENTER_CRITICAL(&passive_stats_lock);
   ++passive_stats.total;
   passive_stats.total_bytes += frame_length;
   switch (packet_type) {
@@ -87,6 +116,7 @@ static void passive_rx_callback(void *buffer,
     passive_stats.strongest_rssi = rssi;
   }
   passive_stats.channel = packet->rx_ctrl.channel;
+  portEXIT_CRITICAL(&passive_stats_lock);
 }
 #endif
 
@@ -121,7 +151,8 @@ static bool wifi_band_validation(void) {
   if (result == ESP_OK) {
     result = esp_wifi_init(&config);
   }
-#ifdef WIFI_VALIDATION_5GHZ
+#if defined(WIFI_VALIDATION_5GHZ) || \
+    defined(WIFI_CHANNEL_CONTROL_VALIDATION)
   if (result == ESP_OK) {
     result = esp_wifi_set_country_code("US", false);
   }
@@ -174,7 +205,11 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi scan channels (non-DFS): 36 40 44 48 149 153 157 161 165\n");
 #endif
 #endif
-#ifdef WIFI_PASSIVE_VALIDATION
+#if defined(WIFI_PASSIVE_VALIDATION) || \
+    defined(WIFI_CHANNEL_CONTROL_VALIDATION)
+#ifdef WIFI_CHANNEL_CONTROL_VALIDATION
+  static const uint8_t control_channels[] = {CHANNEL_CONTROL_CHANNELS};
+#else
   const uint8_t validation_channel = PASSIVE_VALIDATION_CHANNEL;
   result = esp_wifi_set_channel(validation_channel, WIFI_SECOND_CHAN_NONE);
   uint8_t effective_channel = 0;
@@ -187,12 +222,9 @@ static bool wifi_band_validation(void) {
            result == ESP_OK ? "unexpected channel" : esp_err_to_name(result));
     return false;
   }
+#endif
 
-  passive_stats = (passive_validation_stats_t){
-      .shortest_frame = UINT16_MAX,
-      .weakest_rssi = INT8_MAX,
-      .strongest_rssi = INT8_MIN,
-  };
+  reset_passive_stats();
   const wifi_promiscuous_filter_t filter = {
       .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
                      WIFI_PROMIS_FILTER_MASK_CTRL |
@@ -215,12 +247,65 @@ static bool wifi_band_validation(void) {
     return false;
   }
 
-  printf("Wi-Fi fixed channel: %u (verified)\n", effective_channel);
   printf("Wi-Fi promiscuous filter: management control data\n");
   printf("Wi-Fi promiscuous mode: PASS (enabled)\n");
+#ifdef WIFI_CHANNEL_CONTROL_VALIDATION
+  printf("Wi-Fi channel-control dwell: %u ms\n", CHANNEL_CONTROL_DWELL_MS);
+  printf("Wi-Fi channel-control sequence:");
+  for (size_t index = 0;
+       index < sizeof(control_channels) / sizeof(control_channels[0]); ++index) {
+    printf(" %u", control_channels[index]);
+  }
+  printf("\n");
+  fflush(stdout);
+
+  uint32_t sequence_callbacks = 0;
+  unsigned callback_dwells = 0;
+  for (size_t index = 0;
+       index < sizeof(control_channels) / sizeof(control_channels[0]); ++index) {
+    const uint8_t requested_channel = control_channels[index];
+    result = esp_wifi_set_channel(requested_channel, WIFI_SECOND_CHAN_NONE);
+    uint8_t verified_channel = 0;
+    wifi_second_chan_t verified_secondary = WIFI_SECOND_CHAN_NONE;
+    if (result == ESP_OK) {
+      result = esp_wifi_get_channel(&verified_channel, &verified_secondary);
+    }
+    if (result != ESP_OK || verified_channel != requested_channel) {
+      printf("Channel %u set/get: FAIL (%s)\n", requested_channel,
+             result == ESP_OK ? "unexpected channel"
+                              : esp_err_to_name(result));
+      return false;
+    }
+
+    reset_passive_stats();
+    vTaskDelay(pdMS_TO_TICKS(CHANNEL_CONTROL_DWELL_MS));
+    const passive_validation_stats_t dwell = snapshot_passive_stats();
+    sequence_callbacks += dwell.total;
+    if (dwell.total > 0) {
+      ++callback_dwells;
+    }
+
+    printf("Channel %u set/get: PASS\n", requested_channel);
+    printf("Channel %u callbacks: %" PRIu32
+           " (management=%" PRIu32 " control=%" PRIu32
+           " data=%" PRIu32 ")\n",
+           requested_channel, dwell.total, dwell.management, dwell.control,
+           dwell.data);
+    if (dwell.total > 0) {
+      printf("Channel %u RSSI range: %d to %d dBm\n", requested_channel,
+             dwell.weakest_rssi, dwell.strongest_rssi);
+      printf("Channel %u frame length range: %u to %u bytes\n",
+             requested_channel, dwell.shortest_frame, dwell.longest_frame);
+      printf("Channel %u bytes observed: %" PRIu32 "\n", requested_channel,
+             dwell.total_bytes);
+    }
+  }
+#else
+  printf("Wi-Fi fixed channel: %u (verified)\n", effective_channel);
   printf("Wi-Fi passive window: %u ms\n", PASSIVE_VALIDATION_WINDOW_MS);
   fflush(stdout);
   vTaskDelay(pdMS_TO_TICKS(PASSIVE_VALIDATION_WINDOW_MS));
+#endif
 
   result = esp_wifi_set_promiscuous(false);
   promiscuous_enabled = true;
@@ -235,20 +320,28 @@ static bool wifi_band_validation(void) {
   esp_wifi_set_promiscuous_rx_cb(NULL);
 
   printf("Wi-Fi promiscuous shutdown: PASS\n");
-  printf("Passive callbacks: %" PRIu32 "\n", passive_stats.total);
+#ifdef WIFI_CHANNEL_CONTROL_VALIDATION
+  printf("Wi-Fi channel-control callbacks: %" PRIu32
+         " across %u/%u dwells\n",
+         sequence_callbacks, callback_dwells,
+         (unsigned)(sizeof(control_channels) / sizeof(control_channels[0])));
+  const bool callbacks_observed = sequence_callbacks > 0;
+#else
+  const passive_validation_stats_t summary = snapshot_passive_stats();
+  printf("Passive callbacks: %" PRIu32 "\n", summary.total);
   printf("Passive packet classes: management=%" PRIu32
          " control=%" PRIu32 " data=%" PRIu32 "\n",
-         passive_stats.management, passive_stats.control, passive_stats.data);
-  if (passive_stats.total > 0) {
-    printf("Passive channel/band: %u / %s\n", passive_stats.channel, band_name);
-    printf("Passive RSSI range: %d to %d dBm\n", passive_stats.weakest_rssi,
-           passive_stats.strongest_rssi);
+         summary.management, summary.control, summary.data);
+  if (summary.total > 0) {
+    printf("Passive channel/band: %u / %s\n", summary.channel, band_name);
+    printf("Passive RSSI range: %d to %d dBm\n", summary.weakest_rssi,
+           summary.strongest_rssi);
     printf("Passive frame length range: %u to %u bytes\n",
-           passive_stats.shortest_frame, passive_stats.longest_frame);
-    printf("Passive bytes observed: %" PRIu32 "\n", passive_stats.total_bytes);
+           summary.shortest_frame, summary.longest_frame);
+    printf("Passive bytes observed: %" PRIu32 "\n", summary.total_bytes);
   }
-
-  const bool callbacks_observed = passive_stats.total > 0;
+  const bool callbacks_observed = summary.total > 0;
+#endif
   result = esp_wifi_stop();
   if (result == ESP_OK) {
     result = esp_wifi_deinit();
@@ -258,7 +351,11 @@ static bool wifi_band_validation(void) {
     return false;
   }
   printf("Wi-Fi shutdown: PASS\n");
+#ifdef WIFI_CHANNEL_CONTROL_VALIDATION
+  printf("Wi-Fi channel-control validation: %s\n",
+#else
   printf("Wi-Fi passive validation: %s\n",
+#endif
          callbacks_observed ? "COMPLETE" : "FAIL (no callbacks)");
   return callbacks_observed;
 #else

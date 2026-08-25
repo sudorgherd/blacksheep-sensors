@@ -5,6 +5,8 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- Bounded deterministic channel-selection and channel-hopping validation for
+  both C5 band roles
 - Bounded fixed-channel passive/promiscuous receive validation on both C5 band roles
 - Bounded non-DFS 5 GHz infrastructure-scan validation for C5 #2
 - Bounded one-shot 2.4 GHz infrastructure-scan validation for C5 #1
@@ -19,6 +21,8 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 - AGPL-3.0 license
 
 ### Changed
+- ESP32-C5 channel set/get control, passive callback continuity across channel
+  transitions, and clean shutdown physically validated on both C5 boards
 - ESP32-C5 promiscuous receive callbacks and clean shutdown physically validated
   on C5 #1 at 2.4 GHz and C5 #2 at 5 GHz
 - C5 #2 5 GHz Wi-Fi initialization and RF operation physically validated
