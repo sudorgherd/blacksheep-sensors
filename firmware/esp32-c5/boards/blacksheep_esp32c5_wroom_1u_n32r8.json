@@ -1,0 +1,38 @@
+{
+  "build": {
+    "core": "esp32",
+    "f_cpu": "240000000L",
+    "f_flash": "80000000L",
+    "flash_mode": "qio",
+    "hwids": [
+      [
+        "0x303A",
+        "0x1001"
+      ]
+    ],
+    "mcu": "esp32c5",
+    "memory_type": "qio_qspi",
+    "psram_type": "qspi",
+    "variant": "esp32c5"
+  },
+  "connectivity": [
+    "bluetooth",
+    "wifi"
+  ],
+  "debug": {
+    "openocd_target": "esp32c5.cfg"
+  },
+  "frameworks": [
+    "espidf"
+  ],
+  "name": "BLACKSHEEP ESP32-C5-WROOM-1U-N32R8 bring-up target",
+  "upload": {
+    "flash_size": "32MB",
+    "maximum_ram_size": 327680,
+    "maximum_size": 33554432,
+    "require_upload_port": true,
+    "speed": 460800
+  },
+  "url": "https://documentation.espressif.com/esp32-c5-wroom-1_wroom-1u_datasheet_en.html",
+  "vendor": "Espressif"
+}

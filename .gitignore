@@ -3,6 +3,12 @@
 build/
 sdkconfig
 sdkconfig.old
+sdkconfig.*
+!sdkconfig.defaults
+!firmware/esp32-c5/sdkconfig.c5_bringup
+*.log
+serial-captures/
+firmware-artifacts/
 *.bin
 *.elf
 *.map

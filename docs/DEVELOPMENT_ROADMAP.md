@@ -1,6 +1,6 @@
 # PROJECT BLACKSHEEP Sensors — Versioned Development Roadmap
 
-**Status:** Early development
+**Status:** Early development; v0.1.0 in progress
 **Repository:** `sudorgherd/blacksheep-sensors`
 **Initial hardware:** 2× ESP32-C5 development boards
 **Target integration point:** ARGUS REDLINE v1.0
@@ -22,7 +22,33 @@ Following the REDLINE v1.0 release, the C5 sensors will be integrated with a sep
 
 ## v0.1.0 — C5 Hardware Bring-Up
 
-**Status:** Pending hardware delivery
+**Status:** In progress
+
+Completed preparation:
+
+* repository/bootstrap preparation
+* hardware received
+* both development boards mounted on breadboards
+
+Completed bring-up work:
+
+* reproducible ESP32-C5 PlatformIO/ESP-IDF toolchain established
+* basic ESP32-C5 firmware build verified
+* correct ESP32-C5-WROOM-1U-N32R8 board/module configuration established
+* project-local native ESP-IDF CMake bootloader selection and regression guard
+  established
+* serial programming verified on both boards
+* boot and serial diagnostics verified on both boards
+* 32 MB flash and 8 MB PSRAM initialization verified on both boards
+
+PlatformIO's ESP32-C5 SCons integration regenerated the native ESP-IDF
+bootloader and produced an artifact that failed during ROM startup. Selecting
+the authoritative native ESP-IDF CMake bootloader resolved the failure. Both
+boards now reach the second-stage bootloader, pass the PSRAM test, print the
+BLACKSHEEP READY banner, and maintain a stable heartbeat. See
+[`V0.1.0_C5_BRINGUP.md`](V0.1.0_C5_BRINGUP.md) for the evidence and workaround.
+
+Later v0.1.0 hardware and Wi-Fi validation remains pending.
 
 Establish the initial ESP32-C5 development environment and verify both boards independently.
 
