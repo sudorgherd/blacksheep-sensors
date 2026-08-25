@@ -41,6 +41,8 @@ Completed bring-up work:
 * boot and serial diagnostics verified on both boards
 * 32 MB flash and 8 MB PSRAM initialization verified on both boards
 * 2.4 GHz Wi-Fi initialization and bounded infrastructure scan verified on C5 #1
+* 5 GHz Wi-Fi initialization and bounded non-DFS infrastructure scan verified
+  on C5 #2
 
 PlatformIO's ESP32-C5 SCons integration regenerated the native ESP-IDF
 bootloader and produced an artifact that failed during ROM startup. Selecting
@@ -49,8 +51,8 @@ boards now reach the second-stage bootloader, pass the PSRAM test, print the
 BLACKSHEEP READY banner, and maintain a stable heartbeat. See
 [`V0.1.0_C5_BRINGUP.md`](V0.1.0_C5_BRINGUP.md) for the evidence and workaround.
 
-The 5 GHz, passive-observation, channel-control, and metadata-characterization
-work remains pending for v0.1.0.
+The passive-observation, channel-control, and metadata-characterization work
+remains pending for v0.1.0.
 
 Establish the initial ESP32-C5 development environment and verify both boards independently.
 
@@ -59,7 +61,7 @@ Planned work:
 * confirm board configuration and toolchain
 * verify serial programming and debugging
 * validate 2.4 GHz operation — complete
-* validate 5 GHz operation
+* validate 5 GHz operation — complete
 * confirm promiscuous/passive Wi-Fi observation capability
 * establish basic channel-selection and channel-hopping control
 * characterize available metadata exposed by the ESP32-C5 Wi-Fi subsystem
