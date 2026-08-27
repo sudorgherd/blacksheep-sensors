@@ -140,6 +140,9 @@ wifi_layout_result_t wifi_parse_layout(const uint8_t *bytes, size_t length) {
       .subtype = (uint8_t)((raw >> 4U) & 0xfU),
       .to_ds = (raw & (1U << 8U)) != 0U,
       .from_ds = (raw & (1U << 9U)) != 0U,
+      .more_fragments = (raw & (1U << 10U)) != 0U,
+      .retry = (raw & (1U << 11U)) != 0U,
+      .protected_frame = (raw & (1U << 14U)) != 0U,
       .order = (raw & (1U << 15U)) != 0U,
   };
   result.frame_control_valid = true;
@@ -150,6 +153,39 @@ wifi_layout_result_t wifi_parse_layout(const uint8_t *bytes, size_t length) {
   result.minimum_header_length_valid = true;
   if (length < result.minimum_header_length) {
     result.status = WIFI_PARSE_TRUNCATED;
+  }
+  return result;
+}
+
+wifi_control_attributes_t wifi_parse_control_attributes(
+    const uint8_t *bytes, size_t length, const wifi_layout_result_t *parsed) {
+  wifi_control_attributes_t result = {.status = WIFI_PARSE_INVALID};
+  if (parsed == NULL || (bytes == NULL && length != 0U)) {
+    return result;
+  }
+  result.status = parsed->status;
+  if (!parsed->frame_control_valid) {
+    return result;
+  }
+
+  /* IEEE 802.11 FC bits are protocol facts whenever the complete FC exists. */
+  result.frame_control_flags_valid = true;
+  result.more_fragments = parsed->frame_control.more_fragments;
+  result.retry = parsed->frame_control.retry;
+  result.protected_frame = parsed->frame_control.protected_frame;
+
+  /* Sequence Control is bytes 22-23 in the common management and data MAC
+   * headers. Addr4, QoS Control, and HT Control are later fields and do not
+   * move it. Supported control layouts have no Sequence Control field. */
+  if ((parsed->layout_kind == WIFI_LAYOUT_MANAGEMENT ||
+       parsed->layout_kind == WIFI_LAYOUT_DATA) &&
+      parsed->minimum_header_length_valid) {
+    uint16_t sequence_control = 0U;
+    if (wifi_read_le16(bytes, length, 22U, &sequence_control)) {
+      result.sequence_control_valid = true;
+      result.fragment_number = (uint8_t)(sequence_control & 0x0fU);
+      result.sequence_number = (uint16_t)((sequence_control >> 4U) & 0x0fffU);
+    }
   }
   return result;
 }

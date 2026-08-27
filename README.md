@@ -4,8 +4,9 @@ This repository contains the sensor-side firmware and development work for **PRO
 
 ## Current Status
 
-**Early development — v0.1.0 C5 hardware bring-up and v0.2.0 Stages 1–3
-capture, frame-layout, and address-role validation are complete.**
+**Early development — v0.1.0 C5 hardware bring-up and v0.2.0 Stages 1–4
+capture, frame-layout, address-role, and control-attribute validation are
+complete.**
 
 Repository preparation and planned v0.1.0 hardware bring-up are complete on
 both breadboarded ESP32-C5 development boards. The v0.1.0 baseline establishes
@@ -16,6 +17,8 @@ Stage 2 validates management/control/data layouts and callback classes. Stage 3
 adds transient protocol-defined address roles and address-bit classification;
 it does not identify devices, retain identifiers, or define the later
 observation model.
+Stage 4 records Sequence Control and selected Frame Control protocol facts
+without deduplication, reassembly, decryption, or behavioral inference.
 
 Initial hardware development uses two ESP32-C5 boards:
 

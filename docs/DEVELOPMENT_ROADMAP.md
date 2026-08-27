@@ -1,6 +1,6 @@
 # PROJECT BLACKSHEEP Sensors — Versioned Development Roadmap
 
-**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–3 complete
+**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–4 complete
 **Repository:** `sudorgherd/blacksheep-sensors`
 **Initial hardware:** 2× ESP32-C5 development boards
 **Target integration point:** ARGUS REDLINE v1.0
@@ -107,6 +107,9 @@ completed structural management/control/data layout and callback-class
 validation. Stage 3 completed bounded raw address extraction, protocol-defined
 role mapping, address-bit classification, and driver group-bit comparison
 without defining identity or retention behavior.
+Stage 4 completed bounded Sequence Control and Retry/More-Fragments/Protected
+protocol-fact characterization without deduplication, reassembly, decryption,
+or behavioral conclusions.
 
 ## v0.3.0 — Sensor Observation Model
 

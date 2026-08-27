@@ -5,6 +5,8 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- v0.2.0 Stage 4 completed with bounded Sequence Control extraction and exact
+  Retry, More Fragments, and Protected protocol-fact characterization
 - v0.2.0 Stage 3 completed with bounded raw address extraction, protocol-defined
   management/control/data roles, complete DS mapping, local/global/group
   classification, and dual-band driver group-bit comparison

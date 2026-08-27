@@ -20,6 +20,15 @@ static uint16_t make_fc(uint8_t type, uint8_t subtype, bool to_ds,
       (order ? 1U << 15U : 0U));
 }
 
+static uint16_t make_fc_attributes(uint8_t type, uint8_t subtype,
+                                   bool more_fragments, bool retry,
+                                   bool protected_frame) {
+  return (uint16_t)(make_fc(type, subtype, false, false, false) |
+      (more_fragments ? 1U << 10U : 0U) |
+      (retry ? 1U << 11U : 0U) |
+      (protected_frame ? 1U << 14U : 0U));
+}
+
 static void expect_layout(uint8_t type, uint8_t subtype, bool to_ds,
                           bool from_ds, bool order, uint16_t control,
                           wifi_parse_status_t status, wifi_layout_kind_t kind,
@@ -353,6 +362,110 @@ static void test_driver_group_comparison(void) {
         WIFI_GROUP_COMPARE_UNAVAILABLE);
 }
 
+static void check_control_attributes(uint8_t type, uint8_t subtype,
+                                     bool more_fragments, bool retry,
+                                     bool protected_frame, uint16_t sequence,
+                                     uint8_t fragment, bool sequence_valid) {
+  uint8_t frame[WIFI_CAPTURE_PREFIX_MAX] = {0};
+  put_le16(frame, 0, make_fc_attributes(type, subtype, more_fragments, retry,
+                                        protected_frame));
+  put_le16(frame, 22U,
+           (uint16_t)((uint16_t)(sequence & 0x0fffU) << 4U) |
+               (uint16_t)(fragment & 0x0fU));
+  if (type == 1U && (subtype == 8U || subtype == 9U)) {
+    put_le16(frame, 16U, subtype == 9U ? 1U << 2U : 0U);
+  }
+  const wifi_layout_result_t layout = wifi_parse_layout(frame, sizeof(frame));
+  CHECK(layout.status == WIFI_PARSE_OK);
+  const wifi_control_attributes_t attributes =
+      wifi_parse_control_attributes(frame, sizeof(frame), &layout);
+  CHECK(attributes.status == WIFI_PARSE_OK);
+  CHECK(attributes.frame_control_flags_valid);
+  CHECK(attributes.more_fragments == more_fragments);
+  CHECK(attributes.retry == retry);
+  CHECK(attributes.protected_frame == protected_frame);
+  CHECK(attributes.sequence_control_valid == sequence_valid);
+  if (sequence_valid) {
+    CHECK(attributes.sequence_number == sequence);
+    CHECK(attributes.fragment_number == fragment);
+  } else {
+    CHECK(attributes.sequence_number == 0U);
+    CHECK(attributes.fragment_number == 0U);
+  }
+}
+
+static void test_stage4_bit_vectors(void) {
+  for (uint8_t bits = 0U; bits < 8U; ++bits) {
+    check_control_attributes(0U, 8U, (bits & 1U) != 0U,
+                             (bits & 2U) != 0U, (bits & 4U) != 0U,
+                             0U, 0U, true);
+  }
+  const uint16_t sequences[] = {0U, 1U, 0x7ffU, 0x800U, 0xffeU, 0xfffU};
+  const uint8_t fragments[] = {0U, 1U, 7U, 8U, 14U, 15U};
+  for (size_t i = 0U; i < sizeof(sequences) / sizeof(sequences[0]); ++i) {
+    check_control_attributes(2U, 0U, false, false, false,
+                             sequences[i], fragments[i], true);
+  }
+}
+
+static void test_stage4_applicability_and_offsets(void) {
+  /* Every supported management subtype has Sequence Control. */
+  const uint16_t management = 0x7f3fU;
+  for (uint8_t subtype = 0U; subtype < 16U; ++subtype) {
+    if ((management & (1U << subtype)) != 0U) {
+      check_control_attributes(0U, subtype, true, true, true,
+                               (uint16_t)(0x100U + subtype), subtype, true);
+    }
+  }
+  /* Optional fields after Sequence Control do not change its offset. */
+  for (uint8_t subtype = 0U; subtype < 16U; ++subtype) {
+    for (uint8_t ds = 0U; ds < 4U; ++ds) {
+      uint8_t frame[WIFI_CAPTURE_PREFIX_MAX] = {0};
+      const bool qos = (subtype & 8U) != 0U;
+      put_le16(frame, 0U, (uint16_t)(make_fc(2U, subtype,
+          (ds & 1U) != 0U, (ds & 2U) != 0U, qos) | (1U << 11U)));
+      put_le16(frame, 22U, (uint16_t)((0xabcU << 4U) | 0x0dU));
+      const wifi_layout_result_t layout = wifi_parse_layout(frame, sizeof(frame));
+      CHECK(layout.status == WIFI_PARSE_OK);
+      const wifi_control_attributes_t a =
+          wifi_parse_control_attributes(frame, sizeof(frame), &layout);
+      CHECK(a.sequence_control_valid && a.sequence_number == 0xabcU);
+      CHECK(a.fragment_number == 0x0dU && a.retry);
+    }
+  }
+  /* No Stage 2-supported control subtype has Sequence Control. */
+  const uint8_t controls[] = {7U, 8U, 9U, 10U, 11U, 12U, 13U, 14U, 15U};
+  for (size_t i = 0U; i < sizeof(controls) / sizeof(controls[0]); ++i) {
+    check_control_attributes(1U, controls[i], true, true, true,
+                             0U, 0U, false);
+  }
+}
+
+static void test_stage4_truncation_and_invalid(void) {
+  uint8_t frame[WIFI_CAPTURE_PREFIX_MAX] = {0};
+  put_le16(frame, 0U, make_fc_attributes(2U, 8U, true, true, true));
+  put_le16(frame, 22U, (uint16_t)((4095U << 4U) | 15U));
+  for (size_t length = 0U; length < 24U; ++length) {
+    const wifi_layout_result_t layout = wifi_parse_layout(frame, length);
+    const wifi_control_attributes_t a =
+        wifi_parse_control_attributes(frame, length, &layout);
+    CHECK(a.frame_control_flags_valid == (length >= 2U));
+    CHECK(!a.sequence_control_valid);
+  }
+  /* Full Sequence Control is independently safe even if later QoS bytes are
+   * truncated and the complete layout remains truncated. */
+  wifi_layout_result_t layout = wifi_parse_layout(frame, 24U);
+  CHECK(layout.status == WIFI_PARSE_TRUNCATED);
+  wifi_control_attributes_t a =
+      wifi_parse_control_attributes(frame, 24U, &layout);
+  CHECK(a.sequence_control_valid && a.sequence_number == 4095U);
+  CHECK(a.fragment_number == 15U);
+  a = wifi_parse_control_attributes(NULL, 1U, &layout);
+  CHECK(a.status == WIFI_PARSE_INVALID && !a.frame_control_flags_valid);
+  a = wifi_parse_control_attributes(frame, sizeof(frame), NULL);
+  CHECK(a.status == WIFI_PARSE_INVALID && !a.frame_control_flags_valid);
+}
+
 static void test_randomized(void) {
   uint8_t bytes[WIFI_CAPTURE_PREFIX_MAX]; uint32_t state = 0x6d2b79f5U;
   for (unsigned n = 0; n < 100000; ++n) {
@@ -361,11 +474,27 @@ static void test_randomized(void) {
     }
     size_t length = state % (sizeof(bytes) + 1U);
     wifi_layout_result_t r = wifi_parse_layout(bytes, length);
+    const wifi_control_attributes_t attributes =
+        wifi_parse_control_attributes(bytes, length, &r);
     CHECK(r.status >= WIFI_PARSE_OK && r.status <= WIFI_PARSE_CALLBACK_CLASS_MISMATCH);
     CHECK(wifi_compare_callback_class((uint8_t)(state % 5U), &r) <= WIFI_CLASS_INVALID);
     if (r.minimum_header_length_valid) {
       CHECK(r.minimum_header_length <= WIFI_CAPTURE_PREFIX_MAX);
       if (r.status == WIFI_PARSE_OK) CHECK(r.minimum_header_length <= length);
+    }
+    CHECK(!attributes.sequence_control_valid ||
+          (r.layout_kind == WIFI_LAYOUT_MANAGEMENT ||
+           r.layout_kind == WIFI_LAYOUT_DATA));
+    if (attributes.sequence_control_valid) {
+      CHECK(length >= 24U);
+      CHECK(attributes.sequence_number <= 4095U);
+      CHECK(attributes.fragment_number <= 15U);
+    }
+    if (r.frame_control_valid) {
+      CHECK(attributes.frame_control_flags_valid);
+      CHECK(attributes.retry == r.frame_control.retry);
+      CHECK(attributes.more_fragments == r.frame_control.more_fragments);
+      CHECK(attributes.protected_frame == r.frame_control.protected_frame);
     }
     if (r.status == WIFI_PARSE_OK) {
       CHECK(r.layout_kind != WIFI_LAYOUT_NONE); CHECK(r.layout_flags != 0U);
@@ -399,6 +528,8 @@ int main(void) {
   test_management_addresses(); test_data_address_matrix();
   test_control_addresses(); test_address_bounds_and_classification();
   test_driver_group_comparison();
+  test_stage4_bit_vectors(); test_stage4_applicability_and_offsets();
+  test_stage4_truncation_and_invalid();
   test_randomized();
   printf("PASS: %u assertions; event=%zu bytes; queue=%zu bytes\n",
          tests_run, sizeof(wifi_capture_event_t), sizeof(wifi_capture_queue_t));

@@ -23,7 +23,11 @@
 #include "wifi_frame_parser.h"
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_STAGE3_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_STAGE4_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_V020_STAGE4"
+#elif defined(WIFI_STAGE4_CAPTURE)
+#define SENSOR_ROLE "C5_24GHZ_V020_STAGE4"
+#elif defined(WIFI_STAGE3_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_V020_STAGE3"
 #elif defined(WIFI_STAGE3_CAPTURE)
 #define SENSOR_ROLE "C5_24GHZ_V020_STAGE3"
@@ -275,6 +279,20 @@ typedef struct {
   uint64_t addr1_class[5];
   uint64_t source_class[5];
   uint64_t group_comparison[5];
+#ifdef WIFI_STAGE4_CAPTURE
+  uint64_t sequence_control_valid;
+  uint64_t sequence_control_unavailable;
+  uint64_t retry_set;
+  uint64_t retry_clear;
+  uint64_t more_fragments_set;
+  uint64_t more_fragments_clear;
+  uint64_t protected_set;
+  uint64_t protected_clear;
+  uint16_t fragment_seen_mask;
+  uint16_t sequence_min;
+  uint16_t sequence_max;
+  bool sequence_observed;
+#endif
 #endif
 #endif
   uint64_t duration_total_us;
@@ -498,6 +516,37 @@ static void stage1_worker(void *unused) {
           const wifi_group_comparison_t group = wifi_compare_driver_group(
               (event.flags & WIFI_CAPTURE_FLAG_DRIVER_GROUP) != 0U, &addresses);
           stage1_increment(&stage1_stats.group_comparison[group]);
+#ifdef WIFI_STAGE4_CAPTURE
+          const wifi_control_attributes_t attributes =
+              wifi_parse_control_attributes(event.prefix, event.captured_length,
+                                            &parsed);
+          if (attributes.sequence_control_valid) {
+            stage1_increment(&stage1_stats.sequence_control_valid);
+            stage1_stats.fragment_seen_mask |=
+                (uint16_t)(1U << attributes.fragment_number);
+            if (!stage1_stats.sequence_observed ||
+                attributes.sequence_number < stage1_stats.sequence_min) {
+              stage1_stats.sequence_min = attributes.sequence_number;
+            }
+            if (!stage1_stats.sequence_observed ||
+                attributes.sequence_number > stage1_stats.sequence_max) {
+              stage1_stats.sequence_max = attributes.sequence_number;
+            }
+            stage1_stats.sequence_observed = true;
+          } else {
+            stage1_increment(&stage1_stats.sequence_control_unavailable);
+          }
+          if (attributes.frame_control_flags_valid) {
+            stage1_increment(attributes.retry ? &stage1_stats.retry_set
+                                               : &stage1_stats.retry_clear);
+            stage1_increment(attributes.more_fragments
+                                 ? &stage1_stats.more_fragments_set
+                                 : &stage1_stats.more_fragments_clear);
+            stage1_increment(attributes.protected_frame
+                                 ? &stage1_stats.protected_set
+                                 : &stage1_stats.protected_clear);
+          }
+#endif
         }
 #endif
 #endif
@@ -863,6 +912,19 @@ static bool wifi_band_validation(void) {
          summary.source_class[WIFI_ADDRESS_CLASS_GROUP],
          summary.source_class[WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL],
          summary.source_class[WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL]);
+#ifdef WIFI_STAGE4_CAPTURE
+  printf("Stage 4 control attributes: sequence-valid=%" PRIu64
+         " unavailable=%" PRIu64 " sequence-min/max=%u/%u"
+         " fragment-mask=0x%04x\n",
+         summary.sequence_control_valid, summary.sequence_control_unavailable,
+         summary.sequence_min, summary.sequence_max, summary.fragment_seen_mask);
+  printf("Stage 4 FC flags: retry-set/clear=%" PRIu64 "/%" PRIu64
+         " more-fragments-set/clear=%" PRIu64 "/%" PRIu64
+         " protected-set/clear=%" PRIu64 "/%" PRIu64 "\n",
+         summary.retry_set, summary.retry_clear,
+         summary.more_fragments_set, summary.more_fragments_clear,
+         summary.protected_set, summary.protected_clear);
+#endif
 #endif
 #endif
   printf("Stage 1 input: failed-rx=%" PRIu64 " length-inconsistent=%" PRIu64
@@ -956,6 +1018,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_STAGE4_CAPTURE)
+  printf("Wi-Fi v0.2.0 Stage 4 validation: %s\n",
 #elif defined(WIFI_STAGE3_CAPTURE)
   printf("Wi-Fi v0.2.0 Stage 3 validation: %s\n",
 #elif defined(WIFI_STAGE2_CAPTURE)

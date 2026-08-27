@@ -38,6 +38,9 @@ typedef struct {
   uint8_t subtype;
   bool to_ds;
   bool from_ds;
+  bool more_fragments;
+  bool retry;
+  bool protected_frame;
   bool order;
 } wifi_frame_control_t;
 
@@ -72,6 +75,17 @@ typedef struct {
   uint8_t layout_flags;
   uint8_t minimum_header_length;
 } wifi_layout_result_t;
+
+typedef struct {
+  wifi_parse_status_t status;
+  bool frame_control_flags_valid;
+  bool more_fragments;
+  bool retry;
+  bool protected_frame;
+  bool sequence_control_valid;
+  uint16_t sequence_number;
+  uint8_t fragment_number;
+} wifi_control_attributes_t;
 
 #define WIFI_ADDRESS_OCTETS 6U
 
@@ -192,6 +206,8 @@ wifi_address_class_t wifi_classify_address(const wifi_address_t *address);
 wifi_address_class_t wifi_classify_role(const wifi_address_role_t *role);
 wifi_group_comparison_t wifi_compare_driver_group(
     bool driver_is_group, const wifi_address_result_t *addresses);
+wifi_control_attributes_t wifi_parse_control_attributes(
+    const uint8_t *bytes, size_t length, const wifi_layout_result_t *parsed);
 void wifi_counter_increment(uint64_t *counter, bool *saturated);
 
 void wifi_capture_queue_init(wifi_capture_queue_t *queue);
