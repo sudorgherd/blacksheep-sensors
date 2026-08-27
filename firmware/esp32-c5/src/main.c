@@ -23,7 +23,11 @@
 #include "wifi_frame_parser.h"
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_STAGE2_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_STAGE3_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_V020_STAGE3"
+#elif defined(WIFI_STAGE3_CAPTURE)
+#define SENSOR_ROLE "C5_24GHZ_V020_STAGE3"
+#elif defined(WIFI_STAGE2_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_V020_STAGE2"
 #elif defined(WIFI_STAGE2_CAPTURE)
 #define SENSOR_ROLE "C5_24GHZ_V020_STAGE2"
@@ -264,6 +268,14 @@ typedef struct {
   uint64_t qos_layouts;
   uint64_t four_address_layouts;
   uint64_t ht_control_layouts;
+#ifdef WIFI_STAGE3_CAPTURE
+  uint64_t semantic_resolved;
+  uint64_t semantic_unknown;
+  uint64_t role_valid[5];
+  uint64_t addr1_class[5];
+  uint64_t source_class[5];
+  uint64_t group_comparison[5];
+#endif
 #endif
   uint64_t duration_total_us;
   uint64_t duration_samples;
@@ -394,6 +406,9 @@ static void stage1_rx_callback(void *buffer,
   }
   portEXIT_CRITICAL(&stage1_stats_lock);
   event.flags = WIFI_CAPTURE_FLAG_RX_SUCCESS;
+  if (rx->is_group != 0U) {
+    event.flags |= WIFI_CAPTURE_FLAG_DRIVER_GROUP;
+  }
   const wifi_copy_length_result_t copy =
       wifi_capture_copy_length(rx->sig_len, rx->dump_len);
   if (copy.length_discrepancy) {
@@ -459,6 +474,32 @@ static void stage1_worker(void *unused) {
           stage1_increment(&stage1_stats.four_address_layouts);
         if ((parsed.layout_flags & WIFI_LAYOUT_FLAG_HT_CONTROL) != 0U)
           stage1_increment(&stage1_stats.ht_control_layouts);
+#ifdef WIFI_STAGE3_CAPTURE
+        {
+          const wifi_address_result_t addresses = wifi_resolve_addresses(
+              event.prefix, event.captured_length, &parsed);
+          if (addresses.semantics_supported) {
+            stage1_increment(&stage1_stats.semantic_resolved);
+          } else {
+            stage1_increment(&stage1_stats.semantic_unknown);
+          }
+          const wifi_address_role_t *roles[] = {
+              &addresses.receiver, &addresses.transmitter,
+              &addresses.destination, &addresses.source, &addresses.bssid};
+          for (size_t role = 0; role < sizeof(roles) / sizeof(roles[0]); ++role) {
+            if (roles[role]->valid) stage1_increment(&stage1_stats.role_valid[role]);
+          }
+          const wifi_address_class_t addr1_class =
+              wifi_classify_address(&addresses.raw[0]);
+          stage1_increment(&stage1_stats.addr1_class[addr1_class]);
+          const wifi_address_class_t source_class =
+              wifi_classify_role(&addresses.source);
+          stage1_increment(&stage1_stats.source_class[source_class]);
+          const wifi_group_comparison_t group = wifi_compare_driver_group(
+              (event.flags & WIFI_CAPTURE_FLAG_DRIVER_GROUP) != 0U, &addresses);
+          stage1_increment(&stage1_stats.group_comparison[group]);
+        }
+#endif
 #endif
         break;
       case WIFI_PARSE_TRUNCATED:
@@ -791,6 +832,38 @@ static bool wifi_band_validation(void) {
     }
     printf("\n");
   }
+#ifdef WIFI_STAGE3_CAPTURE
+  printf("Stage 3 semantics: resolved=%" PRIu64 " unknown=%" PRIu64
+         " roles-ra/ta/da/sa/bssid=%" PRIu64 "/%" PRIu64 "/%" PRIu64
+         "/%" PRIu64 "/%" PRIu64 "\n",
+         summary.semantic_resolved, summary.semantic_unknown,
+         summary.role_valid[0], summary.role_valid[1], summary.role_valid[2],
+         summary.role_valid[3], summary.role_valid[4]);
+  printf("Stage 3 Addr1 class: invalid=%" PRIu64 " broadcast=%" PRIu64
+         " group=%" PRIu64 " global-individual=%" PRIu64
+         " local-individual=%" PRIu64 "\n",
+         summary.addr1_class[WIFI_ADDRESS_CLASS_INVALID],
+         summary.addr1_class[WIFI_ADDRESS_CLASS_BROADCAST],
+         summary.addr1_class[WIFI_ADDRESS_CLASS_GROUP],
+         summary.addr1_class[WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL],
+         summary.addr1_class[WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL]);
+  printf("Stage 3 driver group: individual-agree=%" PRIu64
+         " group-agree=%" PRIu64 " broadcast-driver-group=%" PRIu64
+         " disagree=%" PRIu64 " unavailable=%" PRIu64 "\n",
+         summary.group_comparison[WIFI_GROUP_COMPARE_BOTH_INDIVIDUAL],
+         summary.group_comparison[WIFI_GROUP_COMPARE_BOTH_GROUP],
+         summary.group_comparison[WIFI_GROUP_COMPARE_BROADCAST_DRIVER_GROUP],
+         summary.group_comparison[WIFI_GROUP_COMPARE_DISAGREEMENT],
+         summary.group_comparison[WIFI_GROUP_COMPARE_UNAVAILABLE]);
+  printf("Stage 3 source class: invalid=%" PRIu64 " broadcast=%" PRIu64
+         " group=%" PRIu64 " global-individual=%" PRIu64
+         " local-individual=%" PRIu64 "\n",
+         summary.source_class[WIFI_ADDRESS_CLASS_INVALID],
+         summary.source_class[WIFI_ADDRESS_CLASS_BROADCAST],
+         summary.source_class[WIFI_ADDRESS_CLASS_GROUP],
+         summary.source_class[WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL],
+         summary.source_class[WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL]);
+#endif
 #endif
   printf("Stage 1 input: failed-rx=%" PRIu64 " length-inconsistent=%" PRIu64
          " misc=%" PRIu64 " null=%" PRIu64 " invalid-class=%" PRIu64 "\n",
@@ -883,6 +956,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_STAGE3_CAPTURE)
+  printf("Wi-Fi v0.2.0 Stage 3 validation: %s\n",
 #elif defined(WIFI_STAGE2_CAPTURE)
   printf("Wi-Fi v0.2.0 Stage 2 validation: %s\n",
 #elif defined(WIFI_STAGE1_CAPTURE)

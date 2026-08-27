@@ -5,6 +5,9 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- v0.2.0 Stage 3 completed with bounded raw address extraction, protocol-defined
+  management/control/data roles, complete DS mapping, local/global/group
+  classification, and dual-band driver group-bit comparison
 - v0.2.0 Stage 2 completed with subtype-aware management/control/data layout
   descriptors, QoS/Addr4/conditional HT Control handling, fail-closed Block Ack
   variants, and measured callback-class agreement on both C5 bands

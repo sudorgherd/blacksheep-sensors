@@ -73,6 +73,54 @@ typedef struct {
   uint8_t minimum_header_length;
 } wifi_layout_result_t;
 
+#define WIFI_ADDRESS_OCTETS 6U
+
+typedef enum {
+  WIFI_ADDRESS_SLOT_NONE = 0,
+  WIFI_ADDRESS_SLOT_ADDR1 = 1,
+  WIFI_ADDRESS_SLOT_ADDR2 = 2,
+  WIFI_ADDRESS_SLOT_ADDR3 = 3,
+  WIFI_ADDRESS_SLOT_ADDR4 = 4
+} wifi_address_slot_t;
+
+typedef struct {
+  bool valid;
+  uint8_t octets[WIFI_ADDRESS_OCTETS];
+} wifi_address_t;
+
+typedef struct {
+  bool valid;
+  wifi_address_slot_t source_slot;
+  uint8_t octets[WIFI_ADDRESS_OCTETS];
+} wifi_address_role_t;
+
+typedef struct {
+  wifi_parse_status_t status;
+  bool semantics_supported;
+  wifi_address_t raw[4];
+  wifi_address_role_t receiver;
+  wifi_address_role_t transmitter;
+  wifi_address_role_t destination;
+  wifi_address_role_t source;
+  wifi_address_role_t bssid;
+} wifi_address_result_t;
+
+typedef enum {
+  WIFI_ADDRESS_CLASS_INVALID = 0,
+  WIFI_ADDRESS_CLASS_BROADCAST,
+  WIFI_ADDRESS_CLASS_GROUP,
+  WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL,
+  WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL
+} wifi_address_class_t;
+
+typedef enum {
+  WIFI_GROUP_COMPARE_BOTH_INDIVIDUAL = 0,
+  WIFI_GROUP_COMPARE_BOTH_GROUP,
+  WIFI_GROUP_COMPARE_BROADCAST_DRIVER_GROUP,
+  WIFI_GROUP_COMPARE_DISAGREEMENT,
+  WIFI_GROUP_COMPARE_UNAVAILABLE
+} wifi_group_comparison_t;
+
 typedef enum {
   WIFI_CLASS_AGREEMENT = 0,
   WIFI_CLASS_MISMATCH,
@@ -108,7 +156,8 @@ typedef struct {
 
 enum {
   WIFI_CAPTURE_FLAG_LENGTH_DISCREPANCY = 1U << 0,
-  WIFI_CAPTURE_FLAG_RX_SUCCESS = 1U << 1
+  WIFI_CAPTURE_FLAG_RX_SUCCESS = 1U << 1,
+  WIFI_CAPTURE_FLAG_DRIVER_GROUP = 1U << 2
 };
 
 typedef struct {
@@ -137,6 +186,12 @@ wifi_parse_status_t wifi_validate_callback_class(uint8_t callback_class,
                                                  uint8_t frame_type);
 wifi_class_comparison_t wifi_compare_callback_class(
     uint8_t callback_class, const wifi_layout_result_t *parsed);
+wifi_address_result_t wifi_resolve_addresses(
+    const uint8_t *bytes, size_t length, const wifi_layout_result_t *parsed);
+wifi_address_class_t wifi_classify_address(const wifi_address_t *address);
+wifi_address_class_t wifi_classify_role(const wifi_address_role_t *role);
+wifi_group_comparison_t wifi_compare_driver_group(
+    bool driver_is_group, const wifi_address_result_t *addresses);
 void wifi_counter_increment(uint64_t *counter, bool *saturated);
 
 void wifi_capture_queue_init(wifi_capture_queue_t *queue);

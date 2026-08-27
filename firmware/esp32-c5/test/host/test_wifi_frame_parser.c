@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 static unsigned tests_run;
 #define CHECK(expr) do { ++tests_run; assert(expr); } while (0)
@@ -177,6 +178,181 @@ static void test_stage1_regression(void) {
   CHECK(q.stats.enqueue_count == UINT64_MAX && q.stats.counter_saturated);
 }
 
+static const uint8_t synthetic_addresses[4][WIFI_ADDRESS_OCTETS] = {
+    {0x02, 0x11, 0x11, 0x11, 0x11, 0x11},
+    {0x04, 0x22, 0x22, 0x22, 0x22, 0x22},
+    {0x06, 0x33, 0x33, 0x33, 0x33, 0x33},
+    {0x08, 0x44, 0x44, 0x44, 0x44, 0x44},
+};
+
+static void fill_addresses(uint8_t *frame) {
+  memcpy(frame + 4U, synthetic_addresses[0], WIFI_ADDRESS_OCTETS);
+  memcpy(frame + 10U, synthetic_addresses[1], WIFI_ADDRESS_OCTETS);
+  memcpy(frame + 16U, synthetic_addresses[2], WIFI_ADDRESS_OCTETS);
+  memcpy(frame + 24U, synthetic_addresses[3], WIFI_ADDRESS_OCTETS);
+}
+
+static void check_role(const wifi_address_role_t *role,
+                       wifi_address_slot_t slot) {
+  CHECK(role->valid); CHECK(role->source_slot == slot);
+  CHECK(memcmp(role->octets, synthetic_addresses[slot - 1U],
+               WIFI_ADDRESS_OCTETS) == 0);
+}
+
+static wifi_address_result_t resolve_fixture(uint8_t type, uint8_t subtype,
+                                             bool to_ds, bool from_ds,
+                                             bool order, uint16_t control) {
+  static uint8_t frame[WIFI_CAPTURE_PREFIX_MAX];
+  memset(frame, 0, sizeof(frame)); fill_addresses(frame);
+  put_le16(frame, 0, make_fc(type, subtype, to_ds, from_ds, order));
+  if (type == 1U && (subtype == 8U || subtype == 9U))
+    put_le16(frame, 16, control);
+  wifi_layout_result_t layout = wifi_parse_layout(frame, sizeof(frame));
+  CHECK(layout.status == WIFI_PARSE_OK);
+  wifi_address_result_t result =
+      wifi_resolve_addresses(frame, sizeof(frame), &layout);
+  CHECK(result.status == WIFI_PARSE_OK);
+  return result;
+}
+
+static void test_management_addresses(void) {
+  const uint16_t valid = 0x7f3fU;
+  for (uint8_t subtype = 0; subtype < 16U; ++subtype) {
+    if ((valid & (1U << subtype)) == 0U) continue;
+    wifi_address_result_t r = resolve_fixture(0, subtype, false, false, false, 0);
+    CHECK(r.semantics_supported);
+    for (size_t i = 0; i < 3U; ++i) CHECK(r.raw[i].valid);
+    CHECK(!r.raw[3].valid);
+    check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1);
+    check_role(&r.destination, WIFI_ADDRESS_SLOT_ADDR1);
+    check_role(&r.transmitter, WIFI_ADDRESS_SLOT_ADDR2);
+    check_role(&r.source, WIFI_ADDRESS_SLOT_ADDR2);
+    check_role(&r.bssid, WIFI_ADDRESS_SLOT_ADDR3);
+  }
+}
+
+static void test_data_address_matrix(void) {
+  for (uint8_t subtype = 0; subtype < 16U; ++subtype) {
+    for (uint8_t ds = 0; ds < 4U; ++ds) {
+      const bool to_ds = (ds & 1U) != 0U;
+      const bool from_ds = (ds & 2U) != 0U;
+      const bool order = (subtype & 8U) != 0U;
+      wifi_address_result_t r =
+          resolve_fixture(2, subtype, to_ds, from_ds, order, 0);
+      CHECK(r.semantics_supported);
+      check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1);
+      check_role(&r.transmitter, WIFI_ADDRESS_SLOT_ADDR2);
+      CHECK(r.raw[3].valid == (to_ds && from_ds));
+      if (ds == 0U) {
+        check_role(&r.destination, WIFI_ADDRESS_SLOT_ADDR1);
+        check_role(&r.source, WIFI_ADDRESS_SLOT_ADDR2);
+        check_role(&r.bssid, WIFI_ADDRESS_SLOT_ADDR3);
+      } else if (ds == 1U) {
+        check_role(&r.bssid, WIFI_ADDRESS_SLOT_ADDR1);
+        check_role(&r.source, WIFI_ADDRESS_SLOT_ADDR2);
+        check_role(&r.destination, WIFI_ADDRESS_SLOT_ADDR3);
+      } else if (ds == 2U) {
+        check_role(&r.destination, WIFI_ADDRESS_SLOT_ADDR1);
+        check_role(&r.bssid, WIFI_ADDRESS_SLOT_ADDR2);
+        check_role(&r.source, WIFI_ADDRESS_SLOT_ADDR3);
+      } else {
+        check_role(&r.destination, WIFI_ADDRESS_SLOT_ADDR3);
+        check_role(&r.source, WIFI_ADDRESS_SLOT_ADDR4);
+        CHECK(!r.bssid.valid);
+      }
+    }
+  }
+}
+
+static void test_control_addresses(void) {
+  wifi_address_result_t r = resolve_fixture(1, 7, 0, 0, 0, 0);
+  check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1); CHECK(!r.transmitter.valid);
+  r = resolve_fixture(1, 8, 0, 0, 0, 0);
+  check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1);
+  check_role(&r.transmitter, WIFI_ADDRESS_SLOT_ADDR2);
+  r = resolve_fixture(1, 9, 0, 0, 0, 1U << 2U);
+  check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1);
+  check_role(&r.transmitter, WIFI_ADDRESS_SLOT_ADDR2);
+  r = resolve_fixture(1, 10, 0, 0, 0, 0);
+  check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1);
+  check_role(&r.bssid, WIFI_ADDRESS_SLOT_ADDR1);
+  check_role(&r.transmitter, WIFI_ADDRESS_SLOT_ADDR2);
+  r = resolve_fixture(1, 11, 0, 0, 0, 0);
+  check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1);
+  check_role(&r.transmitter, WIFI_ADDRESS_SLOT_ADDR2);
+  for (uint8_t subtype = 12; subtype <= 13U; ++subtype) {
+    r = resolve_fixture(1, subtype, 0, 0, 0, 0);
+    check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1);
+    CHECK(!r.transmitter.valid && !r.bssid.valid);
+  }
+  for (uint8_t subtype = 14; subtype <= 15U; ++subtype) {
+    r = resolve_fixture(1, subtype, 0, 0, 0, 0);
+    check_role(&r.receiver, WIFI_ADDRESS_SLOT_ADDR1);
+    check_role(&r.bssid, WIFI_ADDRESS_SLOT_ADDR2);
+    CHECK(!r.transmitter.valid);
+  }
+}
+
+static void test_address_bounds_and_classification(void) {
+  uint8_t frame[WIFI_CAPTURE_PREFIX_MAX] = {0}; fill_addresses(frame);
+  put_le16(frame, 0, make_fc(2, 0, true, true, false));
+  for (size_t length = 0; length < 30U; ++length) {
+    wifi_layout_result_t layout = wifi_parse_layout(frame, length);
+    wifi_address_result_t r = wifi_resolve_addresses(frame, length, &layout);
+    CHECK(r.status == WIFI_PARSE_TRUNCATED);
+    for (size_t slot = 0; slot < 4U; ++slot) CHECK(!r.raw[slot].valid);
+    CHECK(!r.receiver.valid && !r.source.valid && !r.bssid.valid);
+  }
+  wifi_layout_result_t layout = wifi_parse_layout(frame, 30U);
+  wifi_address_result_t r = wifi_resolve_addresses(frame, 30U, &layout);
+  for (size_t slot = 0; slot < 4U; ++slot) CHECK(r.raw[slot].valid);
+
+  wifi_address_t a = {0};
+  CHECK(wifi_classify_address(&a) == WIFI_ADDRESS_CLASS_INVALID);
+  a.valid = true; memset(a.octets, 0xff, sizeof(a.octets));
+  CHECK(wifi_classify_address(&a) == WIFI_ADDRESS_CLASS_BROADCAST);
+  const uint8_t multicast[6] = {0x01, 0, 0x5e, 0, 0, 1};
+  memcpy(a.octets, multicast, sizeof(multicast));
+  CHECK(wifi_classify_address(&a) == WIFI_ADDRESS_CLASS_GROUP);
+  const uint8_t global[6] = {0x00, 1, 2, 3, 4, 5};
+  memcpy(a.octets, global, sizeof(global));
+  CHECK(wifi_classify_address(&a) == WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL);
+  a.octets[0] = 0x02;
+  CHECK(wifi_classify_address(&a) == WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL);
+  CHECK(wifi_classify_address(NULL) == WIFI_ADDRESS_CLASS_INVALID);
+  wifi_address_role_t role = {.valid = true};
+  memcpy(role.octets, global, sizeof(global));
+  CHECK(wifi_classify_role(&role) == WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL);
+  role.octets[0] = 0x02;
+  CHECK(wifi_classify_role(&role) == WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL);
+  role.valid = false;
+  CHECK(wifi_classify_role(&role) == WIFI_ADDRESS_CLASS_INVALID);
+  CHECK(wifi_classify_role(NULL) == WIFI_ADDRESS_CLASS_INVALID);
+}
+
+static void test_driver_group_comparison(void) {
+  wifi_address_result_t r = resolve_fixture(0, 8, 0, 0, 0, 0);
+  r.raw[0].octets[0] = 0x00;
+  CHECK(wifi_compare_driver_group(false, &r) ==
+        WIFI_GROUP_COMPARE_BOTH_INDIVIDUAL);
+  CHECK(wifi_compare_driver_group(true, &r) ==
+        WIFI_GROUP_COMPARE_DISAGREEMENT);
+  r.raw[0].octets[0] = 0x01;
+  CHECK(wifi_compare_driver_group(true, &r) == WIFI_GROUP_COMPARE_BOTH_GROUP);
+  CHECK(wifi_compare_driver_group(false, &r) ==
+        WIFI_GROUP_COMPARE_DISAGREEMENT);
+  memset(r.raw[0].octets, 0xff, WIFI_ADDRESS_OCTETS);
+  CHECK(wifi_compare_driver_group(true, &r) ==
+        WIFI_GROUP_COMPARE_BROADCAST_DRIVER_GROUP);
+  CHECK(wifi_compare_driver_group(false, &r) ==
+        WIFI_GROUP_COMPARE_DISAGREEMENT);
+  r.status = WIFI_PARSE_TRUNCATED;
+  CHECK(wifi_compare_driver_group(false, &r) ==
+        WIFI_GROUP_COMPARE_UNAVAILABLE);
+  CHECK(wifi_compare_driver_group(false, NULL) ==
+        WIFI_GROUP_COMPARE_UNAVAILABLE);
+}
+
 static void test_randomized(void) {
   uint8_t bytes[WIFI_CAPTURE_PREFIX_MAX]; uint32_t state = 0x6d2b79f5U;
   for (unsigned n = 0; n < 100000; ++n) {
@@ -193,6 +369,26 @@ static void test_randomized(void) {
     }
     if (r.status == WIFI_PARSE_OK) {
       CHECK(r.layout_kind != WIFI_LAYOUT_NONE); CHECK(r.layout_flags != 0U);
+      wifi_address_result_t addresses = wifi_resolve_addresses(bytes, length, &r);
+      CHECK(addresses.status == WIFI_PARSE_OK);
+      for (size_t slot = 0; slot < 4U; ++slot) {
+        if (addresses.raw[slot].valid)
+          CHECK(wifi_classify_address(&addresses.raw[slot]) !=
+                WIFI_ADDRESS_CLASS_INVALID);
+      }
+      const wifi_address_role_t *roles[] = {
+          &addresses.receiver, &addresses.transmitter, &addresses.destination,
+          &addresses.source, &addresses.bssid};
+      for (size_t i = 0; i < sizeof(roles) / sizeof(roles[0]); ++i) {
+        if (roles[i]->valid) {
+          CHECK(roles[i]->source_slot >= WIFI_ADDRESS_SLOT_ADDR1);
+          CHECK(roles[i]->source_slot <= WIFI_ADDRESS_SLOT_ADDR4);
+          CHECK(addresses.raw[roles[i]->source_slot - 1U].valid);
+          CHECK(memcmp(roles[i]->octets,
+                       addresses.raw[roles[i]->source_slot - 1U].octets,
+                       WIFI_ADDRESS_OCTETS) == 0);
+        }
+      }
     }
   }
 }
@@ -200,6 +396,9 @@ static void test_randomized(void) {
 int main(void) {
   test_little_endian(); test_management_layouts(); test_control_layouts();
   test_data_layouts(); test_invalid_and_class(); test_stage1_regression();
+  test_management_addresses(); test_data_address_matrix();
+  test_control_addresses(); test_address_bounds_and_classification();
+  test_driver_group_comparison();
   test_randomized();
   printf("PASS: %u assertions; event=%zu bytes; queue=%zu bytes\n",
          tests_run, sizeof(wifi_capture_event_t), sizeof(wifi_capture_queue_t));

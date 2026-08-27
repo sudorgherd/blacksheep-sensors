@@ -178,6 +178,186 @@ wifi_class_comparison_t wifi_compare_callback_class(
                                                        : WIFI_CLASS_MISMATCH;
 }
 
+static bool copy_raw_address(wifi_address_result_t *result,
+                             wifi_address_slot_t slot, const uint8_t *bytes,
+                             size_t length, size_t offset) {
+  if (result == NULL || bytes == NULL || slot < WIFI_ADDRESS_SLOT_ADDR1 ||
+      slot > WIFI_ADDRESS_SLOT_ADDR4 || offset > length ||
+      length - offset < WIFI_ADDRESS_OCTETS) {
+    return false;
+  }
+  wifi_address_t *address = &result->raw[(size_t)slot - 1U];
+  memcpy(address->octets, bytes + offset, WIFI_ADDRESS_OCTETS);
+  address->valid = true;
+  return true;
+}
+
+static void assign_role(wifi_address_role_t *role,
+                        const wifi_address_result_t *result,
+                        wifi_address_slot_t slot) {
+  if (role == NULL || result == NULL || slot < WIFI_ADDRESS_SLOT_ADDR1 ||
+      slot > WIFI_ADDRESS_SLOT_ADDR4) {
+    return;
+  }
+  const wifi_address_t *raw = &result->raw[(size_t)slot - 1U];
+  if (!raw->valid) {
+    return;
+  }
+  memcpy(role->octets, raw->octets, WIFI_ADDRESS_OCTETS);
+  role->source_slot = slot;
+  role->valid = true;
+}
+
+static void map_management(wifi_address_result_t *result) {
+  /* IEEE 802.11 management header names Addr1/2/3 as DA/SA/BSSID.  The
+   * immediate receiver/transmitter are the same slots for these frames. */
+  assign_role(&result->receiver, result, WIFI_ADDRESS_SLOT_ADDR1);
+  assign_role(&result->destination, result, WIFI_ADDRESS_SLOT_ADDR1);
+  assign_role(&result->transmitter, result, WIFI_ADDRESS_SLOT_ADDR2);
+  assign_role(&result->source, result, WIFI_ADDRESS_SLOT_ADDR2);
+  assign_role(&result->bssid, result, WIFI_ADDRESS_SLOT_ADDR3);
+  result->semantics_supported = true;
+}
+
+static void map_data(wifi_address_result_t *result,
+                     const wifi_frame_control_t *fc) {
+  assign_role(&result->receiver, result, WIFI_ADDRESS_SLOT_ADDR1);
+  assign_role(&result->transmitter, result, WIFI_ADDRESS_SLOT_ADDR2);
+  if (!fc->to_ds && !fc->from_ds) {
+    assign_role(&result->destination, result, WIFI_ADDRESS_SLOT_ADDR1);
+    assign_role(&result->source, result, WIFI_ADDRESS_SLOT_ADDR2);
+    assign_role(&result->bssid, result, WIFI_ADDRESS_SLOT_ADDR3);
+  } else if (!fc->to_ds && fc->from_ds) {
+    assign_role(&result->destination, result, WIFI_ADDRESS_SLOT_ADDR1);
+    assign_role(&result->bssid, result, WIFI_ADDRESS_SLOT_ADDR2);
+    assign_role(&result->source, result, WIFI_ADDRESS_SLOT_ADDR3);
+  } else if (fc->to_ds && !fc->from_ds) {
+    assign_role(&result->bssid, result, WIFI_ADDRESS_SLOT_ADDR1);
+    assign_role(&result->source, result, WIFI_ADDRESS_SLOT_ADDR2);
+    assign_role(&result->destination, result, WIFI_ADDRESS_SLOT_ADDR3);
+  } else {
+    assign_role(&result->destination, result, WIFI_ADDRESS_SLOT_ADDR3);
+    assign_role(&result->source, result, WIFI_ADDRESS_SLOT_ADDR4);
+    /* Four-address/WDS has no protocol-defined BSSID slot. */
+  }
+  result->semantics_supported = true;
+}
+
+static void map_control(wifi_address_result_t *result, uint8_t subtype) {
+  switch (subtype) {
+    case 7: /* Control Wrapper: RA only; carried frame is not interpreted. */
+    case 12: /* CTS */
+    case 13: /* ACK */
+      assign_role(&result->receiver, result, WIFI_ADDRESS_SLOT_ADDR1);
+      result->semantics_supported = true;
+      break;
+    case 8: /* BAR */
+    case 9: /* BA */
+    case 11: /* RTS */
+      assign_role(&result->receiver, result, WIFI_ADDRESS_SLOT_ADDR1);
+      assign_role(&result->transmitter, result, WIFI_ADDRESS_SLOT_ADDR2);
+      result->semantics_supported = true;
+      break;
+    case 10: /* PS-Poll: BSSID and TA. */
+      assign_role(&result->receiver, result, WIFI_ADDRESS_SLOT_ADDR1);
+      assign_role(&result->bssid, result, WIFI_ADDRESS_SLOT_ADDR1);
+      assign_role(&result->transmitter, result, WIFI_ADDRESS_SLOT_ADDR2);
+      result->semantics_supported = true;
+      break;
+    case 14: /* CF-End */
+    case 15: /* CF-End + CF-Ack: RA and BSSID. */
+      assign_role(&result->receiver, result, WIFI_ADDRESS_SLOT_ADDR1);
+      assign_role(&result->bssid, result, WIFI_ADDRESS_SLOT_ADDR2);
+      result->semantics_supported = true;
+      break;
+    default:
+      break;
+  }
+}
+
+wifi_address_result_t wifi_resolve_addresses(
+    const uint8_t *bytes, size_t length, const wifi_layout_result_t *parsed) {
+  wifi_address_result_t result = {.status = WIFI_PARSE_INVALID};
+  if (bytes == NULL || parsed == NULL) {
+    return result;
+  }
+  result.status = parsed->status;
+  if (parsed->status != WIFI_PARSE_OK) {
+    return result;
+  }
+  const struct { uint8_t flag; wifi_address_slot_t slot; size_t offset; } slots[] = {
+      {WIFI_LAYOUT_FLAG_ADDR1, WIFI_ADDRESS_SLOT_ADDR1, 4U},
+      {WIFI_LAYOUT_FLAG_ADDR2, WIFI_ADDRESS_SLOT_ADDR2, 10U},
+      {WIFI_LAYOUT_FLAG_ADDR3, WIFI_ADDRESS_SLOT_ADDR3, 16U},
+      {WIFI_LAYOUT_FLAG_ADDR4, WIFI_ADDRESS_SLOT_ADDR4, 24U},
+  };
+  for (size_t i = 0; i < sizeof(slots) / sizeof(slots[0]); ++i) {
+    if ((parsed->layout_flags & slots[i].flag) != 0U &&
+        !copy_raw_address(&result, slots[i].slot, bytes, length,
+                          slots[i].offset)) {
+      memset(&result, 0, sizeof(result));
+      result.status = WIFI_PARSE_TRUNCATED;
+      return result;
+    }
+  }
+  switch (parsed->frame_control.type) {
+    case 0: map_management(&result); break;
+    case 1: map_control(&result, parsed->frame_control.subtype); break;
+    case 2: map_data(&result, &parsed->frame_control); break;
+    default: break;
+  }
+  return result;
+}
+
+wifi_address_class_t wifi_classify_address(const wifi_address_t *address) {
+  if (address == NULL || !address->valid) {
+    return WIFI_ADDRESS_CLASS_INVALID;
+  }
+  bool broadcast = true;
+  for (size_t i = 0; i < WIFI_ADDRESS_OCTETS; ++i) {
+    broadcast = broadcast && address->octets[i] == 0xffU;
+  }
+  if (broadcast) {
+    return WIFI_ADDRESS_CLASS_BROADCAST;
+  }
+  if ((address->octets[0] & 0x01U) != 0U) {
+    return WIFI_ADDRESS_CLASS_GROUP;
+  }
+  return (address->octets[0] & 0x02U) != 0U
+             ? WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL
+             : WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL;
+}
+
+wifi_address_class_t wifi_classify_role(const wifi_address_role_t *role) {
+  wifi_address_t address = {0};
+  if (role == NULL || !role->valid) {
+    return WIFI_ADDRESS_CLASS_INVALID;
+  }
+  address.valid = true;
+  memcpy(address.octets, role->octets, WIFI_ADDRESS_OCTETS);
+  return wifi_classify_address(&address);
+}
+
+wifi_group_comparison_t wifi_compare_driver_group(
+    bool driver_is_group, const wifi_address_result_t *addresses) {
+  if (addresses == NULL || addresses->status != WIFI_PARSE_OK ||
+      !addresses->raw[0].valid) {
+    return WIFI_GROUP_COMPARE_UNAVAILABLE;
+  }
+  const wifi_address_class_t classification =
+      wifi_classify_address(&addresses->raw[0]);
+  if (classification == WIFI_ADDRESS_CLASS_BROADCAST) {
+    return driver_is_group ? WIFI_GROUP_COMPARE_BROADCAST_DRIVER_GROUP
+                           : WIFI_GROUP_COMPARE_DISAGREEMENT;
+  }
+  const bool parsed_group = classification == WIFI_ADDRESS_CLASS_GROUP;
+  if (driver_is_group != parsed_group) {
+    return WIFI_GROUP_COMPARE_DISAGREEMENT;
+  }
+  return parsed_group ? WIFI_GROUP_COMPARE_BOTH_GROUP
+                      : WIFI_GROUP_COMPARE_BOTH_INDIVIDUAL;
+}
+
 wifi_copy_length_result_t wifi_capture_copy_length(uint16_t sig_len,
                                                    uint16_t dump_len) {
   wifi_copy_length_result_t result = {
