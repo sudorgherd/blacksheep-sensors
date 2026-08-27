@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "esp_chip_info.h"
 #include "esp_err.h"
@@ -13,13 +14,20 @@
 #include "esp_netif.h"
 #include "esp_psram.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "wifi_frame_parser.h"
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_METADATA_CHARACTERIZATION) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_STAGE1_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_V020_STAGE1"
+#elif defined(WIFI_STAGE1_CAPTURE)
+#define SENSOR_ROLE "C5_24GHZ_V020_STAGE1"
+#elif defined(WIFI_METADATA_CHARACTERIZATION) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_METADATA"
 #elif defined(WIFI_METADATA_CHARACTERIZATION)
 #define SENSOR_ROLE "C5_24GHZ_METADATA"
@@ -41,7 +49,8 @@
 
 #if defined(WIFI_PASSIVE_VALIDATION) || \
     defined(WIFI_CHANNEL_CONTROL_VALIDATION) || \
-    defined(WIFI_METADATA_CHARACTERIZATION)
+    defined(WIFI_METADATA_CHARACTERIZATION) || \
+    defined(WIFI_STAGE1_CAPTURE)
 #define PASSIVE_VALIDATION_WINDOW_MS 8000
 #define CHANNEL_CONTROL_DWELL_MS 2000
 #ifdef WIFI_VALIDATION_5GHZ
@@ -221,6 +230,266 @@ static void passive_rx_callback(void *buffer,
 }
 #endif
 
+#ifdef WIFI_STAGE1_CAPTURE
+typedef struct {
+  uint64_t callbacks;
+  uint64_t enqueued;
+  uint64_t processed;
+  uint64_t drops;
+  uint64_t misc;
+  uint64_t null_buffers;
+  uint64_t invalid_classes;
+  uint64_t failed_rx;
+  uint64_t length_inconsistent;
+  uint64_t length_samples;
+  uint64_t dump_equals_sig;
+  uint64_t dump_equals_sig_plus_four;
+  uint64_t other_length_relation;
+  uint64_t parser_ok;
+  uint64_t parser_truncated;
+  uint64_t parser_unsupported;
+  uint64_t parser_invalid;
+  uint64_t class_mismatch;
+  uint64_t duration_total_us;
+  uint64_t duration_samples;
+  uint32_t duration_min_us;
+  uint32_t duration_max_us;
+  uint16_t shortest_sig_len;
+  uint16_t longest_sig_len;
+  uint16_t shortest_dump_len;
+  uint16_t longest_dump_len;
+  uint16_t high_water;
+  bool saturated;
+} stage1_stats_t;
+
+static DRAM_ATTR uint8_t stage1_queue_storage[
+    WIFI_CAPTURE_QUEUE_CAPACITY * sizeof(wifi_capture_event_t)];
+static DRAM_ATTR StaticQueue_t stage1_queue_control;
+static QueueHandle_t stage1_queue;
+static TaskHandle_t stage1_worker_handle;
+static volatile bool stage1_accepting;
+static volatile bool stage1_worker_running;
+static stage1_stats_t stage1_stats;
+static portMUX_TYPE stage1_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+
+_Static_assert(WIFI_CAPTURE_PREFIX_MAX == 40U, "Stage 1 prefix bound changed");
+_Static_assert(WIFI_CAPTURE_QUEUE_CAPACITY == 128U, "Stage 1 queue bound changed");
+
+static void stage1_increment(uint64_t *counter) {
+  wifi_counter_increment(counter, &stage1_stats.saturated);
+}
+
+static void stage1_record_duration(int64_t started_us) {
+  const int64_t elapsed = esp_timer_get_time() - started_us;
+  const uint32_t duration = elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+  portENTER_CRITICAL(&stage1_stats_lock);
+  stage1_increment(&stage1_stats.duration_samples);
+  if (UINT64_MAX - stage1_stats.duration_total_us < duration) {
+    stage1_stats.duration_total_us = UINT64_MAX;
+    stage1_stats.saturated = true;
+  } else {
+    stage1_stats.duration_total_us += duration;
+  }
+  if (stage1_stats.duration_samples == 1U || duration < stage1_stats.duration_min_us) {
+    stage1_stats.duration_min_us = duration;
+  }
+  if (duration > stage1_stats.duration_max_us) {
+    stage1_stats.duration_max_us = duration;
+  }
+  portEXIT_CRITICAL(&stage1_stats_lock);
+}
+
+static void stage1_rx_callback(void *buffer,
+                               wifi_promiscuous_pkt_type_t packet_type) {
+  const int64_t started_us = esp_timer_get_time();
+  portENTER_CRITICAL(&stage1_stats_lock);
+  stage1_increment(&stage1_stats.callbacks);
+  portEXIT_CRITICAL(&stage1_stats_lock);
+
+  if (buffer == NULL) {
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.null_buffers);
+    portEXIT_CRITICAL(&stage1_stats_lock);
+    stage1_record_duration(started_us);
+    return;
+  }
+  if (packet_type == WIFI_PKT_MISC) {
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.misc);
+    portEXIT_CRITICAL(&stage1_stats_lock);
+    stage1_record_duration(started_us);
+    return; /* MISC carries rx_ctrl only: never access payload. */
+  }
+  if (packet_type != WIFI_PKT_MGMT && packet_type != WIFI_PKT_CTRL &&
+      packet_type != WIFI_PKT_DATA) {
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.invalid_classes);
+    portEXIT_CRITICAL(&stage1_stats_lock);
+    stage1_record_duration(started_us);
+    return;
+  }
+  if (!stage1_accepting) {
+    stage1_record_duration(started_us);
+    return;
+  }
+
+  const wifi_promiscuous_pkt_t *packet = buffer;
+  const wifi_pkt_rx_ctrl_t *rx = &packet->rx_ctrl;
+  wifi_capture_event_t event = {
+      .rssi = rx->rssi,
+      .noise_floor = rx->noise_floor,
+      .channel = rx->channel,
+      .secondary_channel = rx->second,
+      .timestamp_us = rx->timestamp,
+      .sig_len = rx->sig_len,
+      .dump_len = rx->dump_len,
+      .rx_state = rx->rx_state,
+      .rxend_state = rx->rxend_state,
+      .callback_class = (uint8_t)packet_type,
+  };
+  if (rx->rx_state != 0U || rx->rxend_state != 0U) {
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.failed_rx);
+    portEXIT_CRITICAL(&stage1_stats_lock);
+    stage1_record_duration(started_us);
+    return;
+  }
+  portENTER_CRITICAL(&stage1_stats_lock);
+  stage1_increment(&stage1_stats.length_samples);
+  if (stage1_stats.length_samples == 1U ||
+      rx->sig_len < stage1_stats.shortest_sig_len) {
+    stage1_stats.shortest_sig_len = rx->sig_len;
+  }
+  if (rx->sig_len > stage1_stats.longest_sig_len) {
+    stage1_stats.longest_sig_len = rx->sig_len;
+  }
+  if (stage1_stats.length_samples == 1U ||
+      rx->dump_len < stage1_stats.shortest_dump_len) {
+    stage1_stats.shortest_dump_len = rx->dump_len;
+  }
+  if (rx->dump_len > stage1_stats.longest_dump_len) {
+    stage1_stats.longest_dump_len = rx->dump_len;
+  }
+  if (rx->dump_len == rx->sig_len) {
+    stage1_increment(&stage1_stats.dump_equals_sig);
+  } else if ((uint32_t)rx->dump_len == (uint32_t)rx->sig_len + 4U) {
+    stage1_increment(&stage1_stats.dump_equals_sig_plus_four);
+  } else {
+    stage1_increment(&stage1_stats.other_length_relation);
+  }
+  portEXIT_CRITICAL(&stage1_stats_lock);
+  event.flags = WIFI_CAPTURE_FLAG_RX_SUCCESS;
+  const wifi_copy_length_result_t copy =
+      wifi_capture_copy_length(rx->sig_len, rx->dump_len);
+  if (copy.length_discrepancy) {
+    event.flags |= WIFI_CAPTURE_FLAG_LENGTH_DISCREPANCY;
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.length_inconsistent);
+    portEXIT_CRITICAL(&stage1_stats_lock);
+  }
+  if (copy.status != WIFI_PARSE_OK || copy.copy_length == 0U) {
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.parser_invalid);
+    portEXIT_CRITICAL(&stage1_stats_lock);
+    stage1_record_duration(started_us);
+    return;
+  }
+  event.captured_length = (uint8_t)copy.copy_length;
+  memcpy(event.prefix, packet->payload, event.captured_length);
+
+  portENTER_CRITICAL(&stage1_stats_lock);
+  event.event_number = stage1_stats.callbacks;
+  portEXIT_CRITICAL(&stage1_stats_lock);
+  if (xQueueSend(stage1_queue, &event, 0) == pdTRUE) {
+    const UBaseType_t depth = uxQueueMessagesWaiting(stage1_queue);
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.enqueued);
+    if (depth > stage1_stats.high_water) {
+      stage1_stats.high_water = (uint16_t)depth;
+    }
+    portEXIT_CRITICAL(&stage1_stats_lock);
+  } else {
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.drops); /* Full queue drops newest. */
+    portEXIT_CRITICAL(&stage1_stats_lock);
+  }
+  stage1_record_duration(started_us);
+}
+
+static void stage1_worker(void *unused) {
+  (void)unused;
+  wifi_capture_event_t event;
+  while (stage1_worker_running || uxQueueMessagesWaiting(stage1_queue) != 0U) {
+    if (xQueueReceive(stage1_queue, &event, pdMS_TO_TICKS(20)) != pdTRUE) {
+      continue;
+    }
+    wifi_layout_result_t parsed =
+        wifi_parse_layout(event.prefix, event.captured_length);
+    if (parsed.status == WIFI_PARSE_OK &&
+        wifi_validate_callback_class(event.callback_class,
+                                     parsed.frame_control.type) != WIFI_PARSE_OK) {
+      parsed.status = WIFI_PARSE_CALLBACK_CLASS_MISMATCH;
+    }
+    portENTER_CRITICAL(&stage1_stats_lock);
+    stage1_increment(&stage1_stats.processed);
+    switch (parsed.status) {
+      case WIFI_PARSE_OK: stage1_increment(&stage1_stats.parser_ok); break;
+      case WIFI_PARSE_TRUNCATED: stage1_increment(&stage1_stats.parser_truncated); break;
+      case WIFI_PARSE_UNSUPPORTED_TYPE:
+      case WIFI_PARSE_UNSUPPORTED_SUBTYPE:
+        stage1_increment(&stage1_stats.parser_unsupported); break;
+      case WIFI_PARSE_CALLBACK_CLASS_MISMATCH:
+        stage1_increment(&stage1_stats.class_mismatch); break;
+      default: stage1_increment(&stage1_stats.parser_invalid); break;
+    }
+    portEXIT_CRITICAL(&stage1_stats_lock);
+  }
+  stage1_worker_handle = NULL;
+  vTaskDelete(NULL);
+}
+
+static bool stage1_start(void) {
+  memset(&stage1_stats, 0, sizeof(stage1_stats));
+  stage1_queue = xQueueCreateStatic(WIFI_CAPTURE_QUEUE_CAPACITY,
+                                    sizeof(wifi_capture_event_t),
+                                    stage1_queue_storage,
+                                    &stage1_queue_control);
+  if (stage1_queue == NULL) {
+    return false;
+  }
+  stage1_worker_running = true;
+  if (xTaskCreate(stage1_worker, "capture_worker", 4096, NULL, 5,
+                  &stage1_worker_handle) != pdPASS) {
+    stage1_worker_running = false;
+    return false;
+  }
+  stage1_accepting = true;
+  return true;
+}
+
+static bool stage1_stop_and_drain(void) {
+  stage1_accepting = false;
+  stage1_worker_running = false;
+  const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(2000);
+  while (stage1_worker_handle != NULL && xTaskGetTickCount() < deadline) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  if (stage1_worker_handle != NULL) {
+    const UBaseType_t remaining = uxQueueMessagesWaiting(stage1_queue);
+    portENTER_CRITICAL(&stage1_stats_lock);
+    for (UBaseType_t i = 0; i < remaining; ++i) {
+      stage1_increment(&stage1_stats.drops);
+    }
+    portEXIT_CRITICAL(&stage1_stats_lock);
+    xQueueReset(stage1_queue);
+    vTaskDelete(stage1_worker_handle);
+    stage1_worker_handle = NULL;
+    return false;
+  }
+  return uxQueueMessagesWaiting(stage1_queue) == 0U;
+}
+#endif
+
 #ifdef WIFI_VALIDATION_5GHZ
 static const uint8_t validation_channels[] = {36, 40, 44, 48, 149,
                                                153, 157, 161, 165};
@@ -308,7 +577,8 @@ static bool wifi_band_validation(void) {
 #endif
 #if defined(WIFI_PASSIVE_VALIDATION) || \
     defined(WIFI_CHANNEL_CONTROL_VALIDATION) || \
-    defined(WIFI_METADATA_CHARACTERIZATION)
+    defined(WIFI_METADATA_CHARACTERIZATION) || \
+    defined(WIFI_STAGE1_CAPTURE)
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   static const uint8_t control_channels[] = {CHANNEL_CONTROL_CHANNELS};
 #else
@@ -326,7 +596,14 @@ static bool wifi_band_validation(void) {
   }
 #endif
 
+#ifdef WIFI_STAGE1_CAPTURE
+  if (!stage1_start()) {
+    printf("Stage 1 queue/worker: FAIL\n");
+    return false;
+  }
+#else
   reset_passive_stats();
+#endif
   const wifi_promiscuous_filter_t filter = {
       .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
                      WIFI_PROMIS_FILTER_MASK_CTRL |
@@ -334,7 +611,11 @@ static bool wifi_band_validation(void) {
   };
   result = esp_wifi_set_promiscuous_filter(&filter);
   if (result == ESP_OK) {
+#ifdef WIFI_STAGE1_CAPTURE
+    result = esp_wifi_set_promiscuous_rx_cb(stage1_rx_callback);
+#else
     result = esp_wifi_set_promiscuous_rx_cb(passive_rx_callback);
+#endif
   }
   if (result == ESP_OK) {
     result = esp_wifi_set_promiscuous(true);
@@ -409,6 +690,9 @@ static bool wifi_band_validation(void) {
   vTaskDelay(pdMS_TO_TICKS(PASSIVE_VALIDATION_WINDOW_MS));
 #endif
 
+#ifdef WIFI_STAGE1_CAPTURE
+  stage1_accepting = false;
+#endif
   result = esp_wifi_set_promiscuous(false);
   promiscuous_enabled = true;
   if (result == ESP_OK) {
@@ -422,7 +706,46 @@ static bool wifi_band_validation(void) {
   esp_wifi_set_promiscuous_rx_cb(NULL);
 
   printf("Wi-Fi promiscuous shutdown: PASS\n");
-#ifdef WIFI_CHANNEL_CONTROL_VALIDATION
+#ifdef WIFI_STAGE1_CAPTURE
+  const bool drained = stage1_stop_and_drain();
+  const stage1_stats_t summary = stage1_stats;
+  const uint64_t attempts = summary.enqueued + summary.drops;
+  const uint64_t average_us = summary.duration_samples == 0U
+                                  ? 0U
+                                  : summary.duration_total_us /
+                                        summary.duration_samples;
+  printf("Stage 1 queue drain: %s\n", drained ? "PASS" : "FAIL (bounded discard)");
+  printf("Stage 1 capture: callbacks=%" PRIu64 " enqueued=%" PRIu64
+         " processed=%" PRIu64 " drops=%" PRIu64 "\n",
+         summary.callbacks, summary.enqueued, summary.processed, summary.drops);
+  printf("Stage 1 queue: capacity=%u event=%u bytes storage=%u bytes high-water=%u drop-percent=%" PRIu64 ".%02" PRIu64 "\n",
+         WIFI_CAPTURE_QUEUE_CAPACITY, (unsigned)sizeof(wifi_capture_event_t),
+         (unsigned)sizeof(stage1_queue_storage), summary.high_water,
+         attempts == 0U ? 0U : (summary.drops * 100U) / attempts,
+         attempts == 0U ? 0U : ((summary.drops * 10000U) / attempts) % 100U);
+  printf("Stage 1 parser: ok=%" PRIu64 " truncated=%" PRIu64
+         " unsupported=%" PRIu64 " invalid=%" PRIu64
+         " class-mismatch=%" PRIu64 "\n",
+         summary.parser_ok, summary.parser_truncated,
+         summary.parser_unsupported, summary.parser_invalid,
+         summary.class_mismatch);
+  printf("Stage 1 input: failed-rx=%" PRIu64 " length-inconsistent=%" PRIu64
+         " misc=%" PRIu64 " null=%" PRIu64 " invalid-class=%" PRIu64 "\n",
+         summary.failed_rx, summary.length_inconsistent, summary.misc,
+         summary.null_buffers, summary.invalid_classes);
+  printf("Stage 1 lengths: samples=%" PRIu64 " sig=%u..%u dump=%u..%u"
+         " equal=%" PRIu64 " dump-plus-four=%" PRIu64 " other=%" PRIu64 "\n",
+         summary.length_samples, summary.shortest_sig_len,
+         summary.longest_sig_len, summary.shortest_dump_len,
+         summary.longest_dump_len, summary.dump_equals_sig,
+         summary.dump_equals_sig_plus_four, summary.other_length_relation);
+  printf("Stage 1 callback duration: samples=%" PRIu64
+         " min=%" PRIu32 " us max=%" PRIu32 " us average=%" PRIu64 " us\n",
+         summary.duration_samples, summary.duration_min_us,
+         summary.duration_max_us, average_us);
+  printf("Stage 1 counters saturated: %s\n", summary.saturated ? "yes" : "no");
+  const bool callbacks_observed = summary.callbacks > 0U;
+#elif defined(WIFI_CHANNEL_CONTROL_VALIDATION)
   printf("Wi-Fi channel-control callbacks: %" PRIu32
          " across %u/%u dwells\n",
          sequence_callbacks, callback_dwells,
@@ -497,6 +820,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_STAGE1_CAPTURE)
+  printf("Wi-Fi v0.2.0 Stage 1 validation: %s\n",
 #elif defined(WIFI_METADATA_CHARACTERIZATION)
   printf("Wi-Fi metadata characterization: %s\n",
 #else
@@ -614,7 +939,7 @@ void app_main(void) {
   const esp_err_t flash_result = esp_flash_get_size(NULL, &flash_size);
 
   printf("BLACKSHEEP C5 SENSOR\n");
-  printf("Firmware: 0.1.0-dev\n");
+  printf("Firmware: 0.2.0-dev\n");
   printf("Role: %s\n", SENSOR_ROLE);
   printf("Chip: ESP32-C5\n");
   printf("Revision: %u\n", chip_info.revision);

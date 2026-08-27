@@ -5,6 +5,10 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- v0.2.0 Stage 1 completed with a host-testable, fail-closed 802.11
+  frame-control/layout parser, a bounded 40-byte capture-event contract, and a
+  fixed 128-entry non-blocking capture queue validated under controlled quiet,
+  representative, stress, and known-length traffic on both C5 roles
 - Authoritative staged implementation brief for v0.2.0 raw sensor attribute
   discovery, including parser safety, privacy, test, risk, and acceptance gates
 
