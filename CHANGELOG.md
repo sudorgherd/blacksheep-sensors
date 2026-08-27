@@ -5,6 +5,9 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- v0.2.0 Stage 2 completed with subtype-aware management/control/data layout
+  descriptors, QoS/Addr4/conditional HT Control handling, fail-closed Block Ack
+  variants, and measured callback-class agreement on both C5 bands
 - v0.2.0 Stage 1 completed with a host-testable, fail-closed 802.11
   frame-control/layout parser, a bounded 40-byte capture-event contract, and a
   fixed 128-entry non-blocking capture queue validated under controlled quiet,

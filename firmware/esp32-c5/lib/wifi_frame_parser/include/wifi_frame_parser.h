@@ -17,6 +17,8 @@ typedef enum {
   WIFI_PARSE_TRUNCATED,
   WIFI_PARSE_UNSUPPORTED_TYPE,
   WIFI_PARSE_UNSUPPORTED_SUBTYPE,
+  WIFI_PARSE_RESERVED_SUBTYPE,
+  WIFI_PARSE_UNSUPPORTED_EXTENSION,
   WIFI_PARSE_INVALID,
   WIFI_PARSE_CALLBACK_CLASS_MISMATCH
 } wifi_parse_status_t;
@@ -39,13 +41,46 @@ typedef struct {
   bool order;
 } wifi_frame_control_t;
 
+typedef enum {
+  WIFI_LAYOUT_NONE = 0,
+  WIFI_LAYOUT_MANAGEMENT,
+  WIFI_LAYOUT_CONTROL_WRAPPER,
+  WIFI_LAYOUT_CONTROL_BAR,
+  WIFI_LAYOUT_CONTROL_BA_COMPRESSED,
+  WIFI_LAYOUT_CONTROL_TWO_ADDRESS,
+  WIFI_LAYOUT_CONTROL_ONE_ADDRESS,
+  WIFI_LAYOUT_DATA
+} wifi_layout_kind_t;
+
+enum {
+  WIFI_LAYOUT_FLAG_ADDR1 = 1U << 0,
+  WIFI_LAYOUT_FLAG_ADDR2 = 1U << 1,
+  WIFI_LAYOUT_FLAG_ADDR3 = 1U << 2,
+  WIFI_LAYOUT_FLAG_ADDR4 = 1U << 3,
+  WIFI_LAYOUT_FLAG_QOS_CONTROL = 1U << 4,
+  WIFI_LAYOUT_FLAG_HT_CONTROL = 1U << 5,
+  WIFI_LAYOUT_FLAG_BAR_CONTROL = 1U << 6,
+  WIFI_LAYOUT_FLAG_BA_BITMAP = 1U << 7
+};
+
 typedef struct {
   wifi_parse_status_t status;
   bool frame_control_valid;
   bool minimum_header_length_valid;
   wifi_frame_control_t frame_control;
+  wifi_layout_kind_t layout_kind;
+  uint8_t layout_flags;
   uint8_t minimum_header_length;
 } wifi_layout_result_t;
+
+typedef enum {
+  WIFI_CLASS_AGREEMENT = 0,
+  WIFI_CLASS_MISMATCH,
+  WIFI_CLASS_NO_PARSE,
+  WIFI_CLASS_UNSUPPORTED,
+  WIFI_CLASS_MISC_NO_PAYLOAD,
+  WIFI_CLASS_INVALID
+} wifi_class_comparison_t;
 
 typedef struct {
   wifi_parse_status_t status;
@@ -100,6 +135,8 @@ wifi_copy_length_result_t wifi_capture_copy_length(uint16_t sig_len,
                                                    uint16_t dump_len);
 wifi_parse_status_t wifi_validate_callback_class(uint8_t callback_class,
                                                  uint8_t frame_type);
+wifi_class_comparison_t wifi_compare_callback_class(
+    uint8_t callback_class, const wifi_layout_result_t *parsed);
 void wifi_counter_increment(uint64_t *counter, bool *saturated);
 
 void wifi_capture_queue_init(wifi_capture_queue_t *queue);

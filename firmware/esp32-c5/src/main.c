@@ -23,7 +23,11 @@
 #include "wifi_frame_parser.h"
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_STAGE1_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_STAGE2_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_V020_STAGE2"
+#elif defined(WIFI_STAGE2_CAPTURE)
+#define SENSOR_ROLE "C5_24GHZ_V020_STAGE2"
+#elif defined(WIFI_STAGE1_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_V020_STAGE1"
 #elif defined(WIFI_STAGE1_CAPTURE)
 #define SENSOR_ROLE "C5_24GHZ_V020_STAGE1"
@@ -248,8 +252,19 @@ typedef struct {
   uint64_t parser_ok;
   uint64_t parser_truncated;
   uint64_t parser_unsupported;
+  uint64_t parser_reserved;
+  uint64_t parser_unsupported_extension;
   uint64_t parser_invalid;
+  uint64_t class_agreement;
+  uint64_t class_no_parse;
+  uint64_t class_unsupported;
   uint64_t class_mismatch;
+#ifdef WIFI_STAGE2_CAPTURE
+  uint64_t subtype[3][16];
+  uint64_t qos_layouts;
+  uint64_t four_address_layouts;
+  uint64_t ht_control_layouts;
+#endif
   uint64_t duration_total_us;
   uint64_t duration_samples;
   uint32_t duration_min_us;
@@ -425,22 +440,48 @@ static void stage1_worker(void *unused) {
     }
     wifi_layout_result_t parsed =
         wifi_parse_layout(event.prefix, event.captured_length);
-    if (parsed.status == WIFI_PARSE_OK &&
-        wifi_validate_callback_class(event.callback_class,
-                                     parsed.frame_control.type) != WIFI_PARSE_OK) {
+    const wifi_class_comparison_t class_result =
+        wifi_compare_callback_class(event.callback_class, &parsed);
+    if (class_result == WIFI_CLASS_MISMATCH) {
       parsed.status = WIFI_PARSE_CALLBACK_CLASS_MISMATCH;
     }
     portENTER_CRITICAL(&stage1_stats_lock);
     stage1_increment(&stage1_stats.processed);
     switch (parsed.status) {
-      case WIFI_PARSE_OK: stage1_increment(&stage1_stats.parser_ok); break;
-      case WIFI_PARSE_TRUNCATED: stage1_increment(&stage1_stats.parser_truncated); break;
+      case WIFI_PARSE_OK:
+        stage1_increment(&stage1_stats.parser_ok);
+#ifdef WIFI_STAGE2_CAPTURE
+        stage1_increment(&stage1_stats.subtype[parsed.frame_control.type]
+                                               [parsed.frame_control.subtype]);
+        if ((parsed.layout_flags & WIFI_LAYOUT_FLAG_QOS_CONTROL) != 0U)
+          stage1_increment(&stage1_stats.qos_layouts);
+        if ((parsed.layout_flags & WIFI_LAYOUT_FLAG_ADDR4) != 0U)
+          stage1_increment(&stage1_stats.four_address_layouts);
+        if ((parsed.layout_flags & WIFI_LAYOUT_FLAG_HT_CONTROL) != 0U)
+          stage1_increment(&stage1_stats.ht_control_layouts);
+#endif
+        break;
+      case WIFI_PARSE_TRUNCATED:
+        stage1_increment(&stage1_stats.parser_truncated); break;
       case WIFI_PARSE_UNSUPPORTED_TYPE:
       case WIFI_PARSE_UNSUPPORTED_SUBTYPE:
         stage1_increment(&stage1_stats.parser_unsupported); break;
+      case WIFI_PARSE_RESERVED_SUBTYPE:
+        stage1_increment(&stage1_stats.parser_reserved); break;
+      case WIFI_PARSE_UNSUPPORTED_EXTENSION:
+        stage1_increment(&stage1_stats.parser_unsupported_extension); break;
       case WIFI_PARSE_CALLBACK_CLASS_MISMATCH:
         stage1_increment(&stage1_stats.class_mismatch); break;
       default: stage1_increment(&stage1_stats.parser_invalid); break;
+    }
+    switch (class_result) {
+      case WIFI_CLASS_AGREEMENT:
+        stage1_increment(&stage1_stats.class_agreement); break;
+      case WIFI_CLASS_NO_PARSE:
+        stage1_increment(&stage1_stats.class_no_parse); break;
+      case WIFI_CLASS_UNSUPPORTED:
+        stage1_increment(&stage1_stats.class_unsupported); break;
+      default: break;
     }
     portEXIT_CRITICAL(&stage1_stats_lock);
   }
@@ -724,11 +765,33 @@ static bool wifi_band_validation(void) {
          attempts == 0U ? 0U : (summary.drops * 100U) / attempts,
          attempts == 0U ? 0U : ((summary.drops * 10000U) / attempts) % 100U);
   printf("Stage 1 parser: ok=%" PRIu64 " truncated=%" PRIu64
-         " unsupported=%" PRIu64 " invalid=%" PRIu64
+         " unsupported=%" PRIu64 " reserved=%" PRIu64
+         " unsupported-extension=%" PRIu64 " invalid=%" PRIu64
          " class-mismatch=%" PRIu64 "\n",
          summary.parser_ok, summary.parser_truncated,
-         summary.parser_unsupported, summary.parser_invalid,
+         summary.parser_unsupported, summary.parser_reserved,
+         summary.parser_unsupported_extension, summary.parser_invalid,
          summary.class_mismatch);
+#ifdef WIFI_STAGE2_CAPTURE
+  printf("Stage 2 class comparison: agreement=%" PRIu64
+         " mismatch=%" PRIu64 " no-parse=%" PRIu64
+         " unsupported=%" PRIu64 "\n",
+         summary.class_agreement, summary.class_mismatch,
+         summary.class_no_parse, summary.class_unsupported);
+  printf("Stage 2 layouts: qos=%" PRIu64 " four-address=%" PRIu64
+         " ht-control=%" PRIu64 "\n",
+         summary.qos_layouts, summary.four_address_layouts,
+         summary.ht_control_layouts);
+  for (uint8_t type = 0; type < 3U; ++type) {
+    printf("Stage 2 type %u subtype counts:", type);
+    for (uint8_t subtype = 0; subtype < 16U; ++subtype) {
+      if (summary.subtype[type][subtype] != 0U) {
+        printf(" %u=%" PRIu64, subtype, summary.subtype[type][subtype]);
+      }
+    }
+    printf("\n");
+  }
+#endif
   printf("Stage 1 input: failed-rx=%" PRIu64 " length-inconsistent=%" PRIu64
          " misc=%" PRIu64 " null=%" PRIu64 " invalid-class=%" PRIu64 "\n",
          summary.failed_rx, summary.length_inconsistent, summary.misc,
@@ -820,6 +883,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_STAGE2_CAPTURE)
+  printf("Wi-Fi v0.2.0 Stage 2 validation: %s\n",
 #elif defined(WIFI_STAGE1_CAPTURE)
   printf("Wi-Fi v0.2.0 Stage 1 validation: %s\n",
 #elif defined(WIFI_METADATA_CHARACTERIZATION)

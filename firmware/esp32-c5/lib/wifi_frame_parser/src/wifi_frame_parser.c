@@ -12,51 +12,113 @@ bool wifi_read_le16(const uint8_t *bytes, size_t length, size_t offset,
   return true;
 }
 
-static wifi_parse_status_t minimum_header_length(const wifi_frame_control_t *fc,
-                                                 uint8_t *header_length) {
+static wifi_parse_status_t management_layout(const wifi_frame_control_t *fc,
+                                             wifi_layout_result_t *result) {
+  /* IEEE 802.11-2020 9.3.3.1: management MAC header is 24 bytes; the
+   * Order bit indicates a four-byte HT Control field for management frames. */
+  if (fc->subtype == 6U || fc->subtype == 7U || fc->subtype == 15U) {
+    return WIFI_PARSE_RESERVED_SUBTYPE;
+  }
+  result->layout_kind = WIFI_LAYOUT_MANAGEMENT;
+  result->layout_flags = WIFI_LAYOUT_FLAG_ADDR1 | WIFI_LAYOUT_FLAG_ADDR2 |
+                         WIFI_LAYOUT_FLAG_ADDR3;
+  result->minimum_header_length = 24U;
+  if (fc->order) {
+    result->layout_flags |= WIFI_LAYOUT_FLAG_HT_CONTROL;
+    result->minimum_header_length = 28U;
+  }
+  return WIFI_PARSE_OK;
+}
+
+static wifi_parse_status_t control_layout(const uint8_t *bytes, size_t length,
+                                          const wifi_frame_control_t *fc,
+                                          wifi_layout_result_t *result) {
+  switch (fc->subtype) {
+    case 7: /* Control Wrapper: FC, Duration, RA, Carried FC, HT Control. */
+      result->layout_kind = WIFI_LAYOUT_CONTROL_WRAPPER;
+      result->layout_flags = WIFI_LAYOUT_FLAG_ADDR1 | WIFI_LAYOUT_FLAG_HT_CONTROL;
+      result->minimum_header_length = 16U;
+      return WIFI_PARSE_OK;
+    case 8: /* Block Ack Request; BAR Control selects the variant. */
+    case 9: { /* Block Ack; BA Control selects bitmap form. */
+      uint16_t control = 0U;
+      if (!wifi_read_le16(bytes, length, 16U, &control)) {
+        return WIFI_PARSE_TRUNCATED;
+      }
+      if ((control & (1U << 1U)) != 0U) {
+        return WIFI_PARSE_UNSUPPORTED_EXTENSION; /* Multi-TID is variable. */
+      }
+      result->layout_flags = WIFI_LAYOUT_FLAG_ADDR1 | WIFI_LAYOUT_FLAG_ADDR2 |
+                             WIFI_LAYOUT_FLAG_BAR_CONTROL;
+      if (fc->subtype == 8U) {
+        result->layout_kind = WIFI_LAYOUT_CONTROL_BAR;
+        result->minimum_header_length = 20U;
+        return WIFI_PARSE_OK;
+      }
+      if ((control & (1U << 2U)) == 0U) {
+        return WIFI_PARSE_UNSUPPORTED_EXTENSION; /* Basic BA is 148 bytes. */
+      }
+      result->layout_kind = WIFI_LAYOUT_CONTROL_BA_COMPRESSED;
+      result->layout_flags |= WIFI_LAYOUT_FLAG_BA_BITMAP;
+      result->minimum_header_length = 28U;
+      return WIFI_PARSE_OK;
+    }
+    case 10: /* PS-Poll */
+    case 11: /* RTS */
+    case 14: /* CF-End */
+    case 15: /* CF-End + CF-Ack */
+      result->layout_kind = WIFI_LAYOUT_CONTROL_TWO_ADDRESS;
+      result->layout_flags = WIFI_LAYOUT_FLAG_ADDR1 | WIFI_LAYOUT_FLAG_ADDR2;
+      result->minimum_header_length = 16U;
+      return WIFI_PARSE_OK;
+    case 12: /* CTS */
+    case 13: /* ACK */
+      result->layout_kind = WIFI_LAYOUT_CONTROL_ONE_ADDRESS;
+      result->layout_flags = WIFI_LAYOUT_FLAG_ADDR1;
+      result->minimum_header_length = 10U;
+      return WIFI_PARSE_OK;
+    case 2: /* Trigger: variable Common Info and User Info fields. */
+    case 6: /* Control Frame Extension: extension-dependent layout. */
+      return WIFI_PARSE_UNSUPPORTED_SUBTYPE;
+    default:
+      return WIFI_PARSE_RESERVED_SUBTYPE;
+  }
+}
+
+static wifi_parse_status_t data_layout(const wifi_frame_control_t *fc,
+                                       wifi_layout_result_t *result) {
+  uint8_t required = 24U;
+  const bool qos = (fc->subtype & 8U) != 0U;
+  result->layout_kind = WIFI_LAYOUT_DATA;
+  result->layout_flags = WIFI_LAYOUT_FLAG_ADDR1 | WIFI_LAYOUT_FLAG_ADDR2 |
+                         WIFI_LAYOUT_FLAG_ADDR3;
+  if (fc->to_ds && fc->from_ds) {
+    required = (uint8_t)(required + 6U);
+    result->layout_flags |= WIFI_LAYOUT_FLAG_ADDR4;
+  }
+  if (qos) {
+    required = (uint8_t)(required + 2U);
+    result->layout_flags |= WIFI_LAYOUT_FLAG_QOS_CONTROL;
+    /* IEEE hdrlen semantics: Order adds HT Control only to QoS data. */
+    if (fc->order) {
+      required = (uint8_t)(required + 4U);
+      result->layout_flags |= WIFI_LAYOUT_FLAG_HT_CONTROL;
+    }
+  }
+  result->minimum_header_length = required;
+  return WIFI_PARSE_OK;
+}
+
+static wifi_parse_status_t determine_layout(const uint8_t *bytes, size_t length,
+                                            wifi_layout_result_t *result) {
+  const wifi_frame_control_t *fc = &result->frame_control;
   if (fc->protocol_version != 0U) {
     return WIFI_PARSE_INVALID;
   }
   switch (fc->type) {
-    case 0: /* IEEE 802.11 management frames have a 24-byte MAC header. */
-      if (fc->subtype == 6U || fc->subtype == 7U || fc->subtype == 15U) {
-        return WIFI_PARSE_UNSUPPORTED_SUBTYPE;
-      }
-      *header_length = 24U;
-      return WIFI_PARSE_OK;
-    case 1: /* Control layouts are subtype-specific; never assume 24 bytes. */
-      switch (fc->subtype) {
-        case 7:  /* Control Wrapper */
-        case 8:  /* Block Ack Request */
-        case 9:  /* Block Ack */
-        case 10: /* PS-Poll */
-        case 11: /* RTS */
-        case 14: /* CF-End */
-        case 15: /* CF-End + CF-Ack */
-          *header_length = 16U;
-          return WIFI_PARSE_OK;
-        case 12: /* CTS */
-        case 13: /* ACK */
-          *header_length = 10U;
-          return WIFI_PARSE_OK;
-        default:
-          return WIFI_PARSE_UNSUPPORTED_SUBTYPE;
-      }
-    case 2: { /* Data: base + optional Addr4 + QoS + HT Control. */
-      uint8_t length = 24U;
-      const bool qos = (fc->subtype & 8U) != 0U;
-      if (fc->to_ds && fc->from_ds) {
-        length = (uint8_t)(length + 6U);
-      }
-      if (qos) {
-        length = (uint8_t)(length + 2U);
-        if (fc->order) {
-          length = (uint8_t)(length + 4U);
-        }
-      }
-      *header_length = length;
-      return WIFI_PARSE_OK;
-    }
+    case 0: return management_layout(fc, result);
+    case 1: return control_layout(bytes, length, fc, result);
+    case 2: return data_layout(fc, result);
     default:
       return WIFI_PARSE_UNSUPPORTED_TYPE;
   }
@@ -81,8 +143,7 @@ wifi_layout_result_t wifi_parse_layout(const uint8_t *bytes, size_t length) {
       .order = (raw & (1U << 15U)) != 0U,
   };
   result.frame_control_valid = true;
-  result.status = minimum_header_length(&result.frame_control,
-                                        &result.minimum_header_length);
+  result.status = determine_layout(bytes, length, &result);
   if (result.status != WIFI_PARSE_OK) {
     return result;
   }
@@ -91,6 +152,30 @@ wifi_layout_result_t wifi_parse_layout(const uint8_t *bytes, size_t length) {
     result.status = WIFI_PARSE_TRUNCATED;
   }
   return result;
+}
+
+wifi_class_comparison_t wifi_compare_callback_class(
+    uint8_t callback_class, const wifi_layout_result_t *parsed) {
+  if (callback_class == WIFI_CALLBACK_MISC) {
+    return WIFI_CLASS_MISC_NO_PAYLOAD;
+  }
+  if (callback_class > WIFI_CALLBACK_MISC || parsed == NULL) {
+    return WIFI_CLASS_INVALID;
+  }
+  if (!parsed->frame_control_valid || parsed->status == WIFI_PARSE_TRUNCATED) {
+    return WIFI_CLASS_NO_PARSE;
+  }
+  if (parsed->status == WIFI_PARSE_UNSUPPORTED_TYPE ||
+      parsed->status == WIFI_PARSE_UNSUPPORTED_SUBTYPE ||
+      parsed->status == WIFI_PARSE_RESERVED_SUBTYPE ||
+      parsed->status == WIFI_PARSE_UNSUPPORTED_EXTENSION) {
+    return WIFI_CLASS_UNSUPPORTED;
+  }
+  if (parsed->status != WIFI_PARSE_OK) {
+    return WIFI_CLASS_INVALID;
+  }
+  return callback_class == parsed->frame_control.type ? WIFI_CLASS_AGREEMENT
+                                                       : WIFI_CLASS_MISMATCH;
 }
 
 wifi_copy_length_result_t wifi_capture_copy_length(uint16_t sig_len,

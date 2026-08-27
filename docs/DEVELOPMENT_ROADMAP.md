@@ -1,6 +1,6 @@
 # PROJECT BLACKSHEEP Sensors — Versioned Development Roadmap
 
-**Status:** Early development; v0.1.0 and v0.2.0 Stage 1 complete
+**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–2 complete
 **Repository:** `sudorgherd/blacksheep-sensors`
 **Initial hardware:** 2× ESP32-C5 development boards
 **Target integration point:** ARGUS REDLINE v1.0
@@ -101,6 +101,10 @@ Initial target attributes include:
 * activity and timing characteristics
 
 The purpose of this milestone is discovery and characterization. The final BLACKSHEEP sensor record is not expected to be frozen yet.
+
+Stage 1 bounded callback ownership, copying, queueing, and shutdown. Stage 2
+completed structural management/control/data layout and callback-class
+validation without implementing semantic address roles.
 
 ## v0.3.0 — Sensor Observation Model
 

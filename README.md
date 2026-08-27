@@ -4,15 +4,16 @@ This repository contains the sensor-side firmware and development work for **PRO
 
 ## Current Status
 
-**Early development — v0.1.0 C5 hardware bring-up and v0.2.0 Stage 1 bounded
-capture-substrate development are complete.**
+**Early development — v0.1.0 C5 hardware bring-up and v0.2.0 Stages 1–2
+capture-substrate and frame-layout validation are complete.**
 
 Repository preparation and planned v0.1.0 hardware bring-up are complete on
 both breadboarded ESP32-C5 development boards. The v0.1.0 baseline establishes
 the physically validated C5 hardware and development environment; v0.2.0 will
 evaluate which exposed attributes are useful and reliable for sensing. Stage 1
-established bounded capture ownership and host-tested parsing primitives; it
-does not yet parse identifiers or define the later observation model.
+established bounded capture ownership and host-tested parsing primitives.
+Stage 2 validates management/control/data layouts and callback classes; it does
+not interpret identifiers or define the later observation model.
 
 Initial hardware development uses two ESP32-C5 boards:
 
