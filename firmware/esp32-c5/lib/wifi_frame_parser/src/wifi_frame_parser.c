@@ -462,6 +462,78 @@ void wifi_signed_aggregate_add(wifi_signed_aggregate_t *aggregate,
   ++aggregate->samples;
 }
 
+static void timing_increment(uint64_t *value, wifi_timing_state_t *state) {
+  wifi_counter_increment(value, &state->saturated);
+}
+
+void wifi_timing_state_init(wifi_timing_state_t *state, uint32_t epoch_id,
+                            uint64_t drop_count) {
+  if (state == NULL) return;
+  memset(state, 0, sizeof(*state));
+  state->epoch_id = epoch_id;
+  state->epoch_valid = true;
+  state->observed_drop_count = drop_count;
+}
+
+wifi_timing_result_t wifi_timing_observe(
+    wifi_timing_state_t *state, uint32_t timestamp_us, bool timestamp_valid,
+    uint32_t epoch_id, uint64_t drop_count, bool channel_boundary) {
+  wifi_timing_result_t result = {
+      .discontinuity = WIFI_TIMING_DISCONTINUITY_INVALID_TIMESTAMP};
+  if (state == NULL) return result;
+  timing_increment(&state->events, state);
+
+  if (!state->epoch_valid || epoch_id != state->epoch_id) {
+    state->epoch_id = epoch_id;
+    state->epoch_valid = true;
+    state->previous_valid = false;
+    state->observed_drop_count = drop_count;
+    timing_increment(&state->epoch_boundaries, state);
+    timing_increment(&state->invalid_deltas, state);
+    result.discontinuity = WIFI_TIMING_DISCONTINUITY_EPOCH_BOUNDARY;
+  } else if (channel_boundary) {
+    state->previous_valid = false;
+    state->observed_drop_count = drop_count;
+    timing_increment(&state->channel_boundaries, state);
+    timing_increment(&state->invalid_deltas, state);
+    result.discontinuity = WIFI_TIMING_DISCONTINUITY_CHANNEL_BOUNDARY;
+  } else if (drop_count != state->observed_drop_count) {
+    state->previous_valid = false;
+    state->observed_drop_count = drop_count;
+    timing_increment(&state->drop_discontinuities, state);
+    timing_increment(&state->invalid_deltas, state);
+    result.discontinuity = WIFI_TIMING_DISCONTINUITY_QUEUE_DROP;
+  } else if (!timestamp_valid) {
+    state->previous_valid = false;
+    timing_increment(&state->invalid_deltas, state);
+  } else if (!state->previous_valid) {
+    timing_increment(&state->invalid_deltas, state);
+    result.discontinuity = WIFI_TIMING_DISCONTINUITY_FIRST_SAMPLE;
+  } else {
+    result.delta_us = timestamp_us - state->previous_timestamp_us;
+    result.crossed_wrap = timestamp_us < state->previous_timestamp_us;
+    result.delta_valid = true;
+    result.discontinuity = WIFI_TIMING_DISCONTINUITY_NONE;
+    timing_increment(&state->valid_deltas, state);
+    if (state->valid_deltas == 1U || result.delta_us < state->delta_min_us)
+      state->delta_min_us = result.delta_us;
+    if (result.delta_us > state->delta_max_us)
+      state->delta_max_us = result.delta_us;
+    if (UINT64_MAX - state->delta_sum_us < result.delta_us) {
+      state->delta_sum_us = UINT64_MAX;
+      state->saturated = true;
+    } else {
+      state->delta_sum_us += result.delta_us;
+    }
+  }
+
+  if (timestamp_valid) {
+    state->previous_timestamp_us = timestamp_us;
+    state->previous_valid = true;
+  }
+  return result;
+}
+
 wifi_controlled_source_result_t wifi_match_controlled_ap_beacon(
     const wifi_layout_result_t *parsed,
     const wifi_address_result_t *addresses,

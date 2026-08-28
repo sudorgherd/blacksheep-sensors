@@ -179,6 +179,40 @@ typedef struct {
 } wifi_signed_aggregate_t;
 
 typedef enum {
+  WIFI_TIMING_DISCONTINUITY_NONE = 0,
+  WIFI_TIMING_DISCONTINUITY_FIRST_SAMPLE,
+  WIFI_TIMING_DISCONTINUITY_INVALID_TIMESTAMP,
+  WIFI_TIMING_DISCONTINUITY_EPOCH_BOUNDARY,
+  WIFI_TIMING_DISCONTINUITY_QUEUE_DROP,
+  WIFI_TIMING_DISCONTINUITY_CHANNEL_BOUNDARY
+} wifi_timing_discontinuity_t;
+
+typedef struct {
+  bool delta_valid;
+  bool crossed_wrap;
+  uint32_t delta_us;
+  wifi_timing_discontinuity_t discontinuity;
+} wifi_timing_result_t;
+
+typedef struct {
+  uint64_t events;
+  uint64_t valid_deltas;
+  uint64_t invalid_deltas;
+  uint64_t delta_sum_us;
+  uint32_t delta_min_us;
+  uint32_t delta_max_us;
+  uint64_t epoch_boundaries;
+  uint64_t drop_discontinuities;
+  uint64_t channel_boundaries;
+  uint32_t epoch_id;
+  uint32_t previous_timestamp_us;
+  uint64_t observed_drop_count;
+  bool epoch_valid;
+  bool previous_valid;
+  bool saturated;
+} wifi_timing_state_t;
+
+typedef enum {
   WIFI_CONTROLLED_SOURCE_MATCH = 0,
   WIFI_CONTROLLED_SOURCE_NONMATCH,
   WIFI_CONTROLLED_SOURCE_ROLE_UNAVAILABLE,
@@ -239,6 +273,11 @@ wifi_channel_comparison_t wifi_compare_channel_context(
     uint8_t received_channel);
 void wifi_signed_aggregate_add(wifi_signed_aggregate_t *aggregate,
                                int32_t value);
+void wifi_timing_state_init(wifi_timing_state_t *state, uint32_t epoch_id,
+                            uint64_t drop_count);
+wifi_timing_result_t wifi_timing_observe(
+    wifi_timing_state_t *state, uint32_t timestamp_us, bool timestamp_valid,
+    uint32_t epoch_id, uint64_t drop_count, bool channel_boundary);
 wifi_controlled_source_result_t wifi_match_controlled_ap_beacon(
     const wifi_layout_result_t *parsed,
     const wifi_address_result_t *addresses,

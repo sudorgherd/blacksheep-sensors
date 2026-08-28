@@ -604,6 +604,86 @@ static void test_stage5_controlled_source(void) {
             synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_INVALID);
 }
 
+static void test_stage6_timing_golden_vectors(void) {
+  wifi_timing_state_t timing;
+  wifi_timing_state_init(&timing, 1U, 0U);
+  wifi_timing_result_t result =
+      wifi_timing_observe(&timing, 0U, true, 1U, 0U, false);
+  CHECK(!result.delta_valid);
+  CHECK(result.discontinuity == WIFI_TIMING_DISCONTINUITY_FIRST_SAMPLE);
+  result = wifi_timing_observe(&timing, 0U, true, 1U, 0U, false);
+  CHECK(result.delta_valid && result.delta_us == 0U && !result.crossed_wrap);
+  result = wifi_timing_observe(&timing, 1U, true, 1U, 0U, false);
+  CHECK(result.delta_valid && result.delta_us == 1U);
+  result = wifi_timing_observe(&timing, 1000001U, true, 1U, 0U, false);
+  CHECK(result.delta_valid && result.delta_us == 1000000U);
+
+  wifi_timing_state_init(&timing, 7U, 0U);
+  (void)wifi_timing_observe(&timing, UINT32_MAX - 4U, true, 7U, 0U, false);
+  result = wifi_timing_observe(&timing, 3U, true, 7U, 0U, false);
+  CHECK(result.delta_valid && result.delta_us == 8U && result.crossed_wrap);
+  wifi_timing_state_init(&timing, 7U, 0U);
+  (void)wifi_timing_observe(&timing, UINT32_MAX, true, 7U, 0U, false);
+  result = wifi_timing_observe(&timing, 0U, true, 7U, 0U, false);
+  CHECK(result.delta_valid && result.delta_us == 1U && result.crossed_wrap);
+  wifi_timing_state_init(&timing, 7U, 0U);
+  (void)wifi_timing_observe(&timing, 0xfffffff0U, true, 7U, 0U, false);
+  result = wifi_timing_observe(&timing, 0x10U, true, 7U, 0U, false);
+  CHECK(result.delta_valid && result.delta_us == 32U && result.crossed_wrap);
+}
+
+static void test_stage6_injected_discontinuities(void) {
+  wifi_timing_state_t timing;
+  wifi_timing_state_init(&timing, 11U, 4U);
+  wifi_timing_result_t result =
+      wifi_timing_observe(&timing, 100U, false, 11U, 4U, false);
+  CHECK(!result.delta_valid);
+  CHECK(result.discontinuity == WIFI_TIMING_DISCONTINUITY_INVALID_TIMESTAMP);
+  result = wifi_timing_observe(&timing, 100U, true, 11U, 4U, false);
+  CHECK(!result.delta_valid);
+  result = wifi_timing_observe(&timing, 200U, true, 11U, 5U, false);
+  CHECK(!result.delta_valid);
+  CHECK(result.discontinuity == WIFI_TIMING_DISCONTINUITY_QUEUE_DROP);
+  result = wifi_timing_observe(&timing, 300U, true, 11U, 5U, false);
+  CHECK(result.delta_valid && result.delta_us == 100U);
+  result = wifi_timing_observe(&timing, 400U, true, 11U, 5U, true);
+  CHECK(!result.delta_valid);
+  CHECK(result.discontinuity == WIFI_TIMING_DISCONTINUITY_CHANNEL_BOUNDARY);
+  result = wifi_timing_observe(&timing, 500U, true, 12U, 5U, false);
+  CHECK(!result.delta_valid);
+  CHECK(result.discontinuity == WIFI_TIMING_DISCONTINUITY_EPOCH_BOUNDARY);
+  result = wifi_timing_observe(&timing, 600U, true, 12U, 5U, false);
+  CHECK(result.delta_valid && result.delta_us == 100U);
+  CHECK(timing.events == 7U && timing.valid_deltas == 2U);
+  CHECK(timing.invalid_deltas == 5U);
+  CHECK(timing.drop_discontinuities == 1U);
+  CHECK(timing.channel_boundaries == 1U && timing.epoch_boundaries == 1U);
+
+  wifi_timing_state_init(&timing, 1U, 0U);
+  CHECK(timing.events == 0U && timing.valid_deltas == 0U);
+  (void)wifi_timing_observe(&timing, 5U, true, 1U, 0U, false);
+  CHECK(timing.events == 1U && timing.invalid_deltas == 1U);
+  (void)wifi_timing_observe(&timing, 10U, true, 1U, 0U, false);
+  CHECK(timing.delta_min_us == 5U && timing.delta_max_us == 5U);
+  CHECK(timing.delta_sum_us == 5U);
+  wifi_timing_state_init(&timing, 2U, 9U);
+  CHECK(timing.events == 0U && timing.observed_drop_count == 9U);
+  wifi_timing_state_init(NULL, 0U, 0U);
+  result = wifi_timing_observe(NULL, 0U, true, 0U, 0U, false);
+  CHECK(!result.delta_valid);
+
+  timing.events = UINT64_MAX;
+  timing.saturated = false;
+  (void)wifi_timing_observe(&timing, 1U, true, 2U, 9U, false);
+  CHECK(timing.events == UINT64_MAX && timing.saturated);
+  timing.delta_sum_us = UINT64_MAX;
+  timing.saturated = false;
+  timing.previous_valid = true;
+  timing.previous_timestamp_us = 1U;
+  (void)wifi_timing_observe(&timing, 2U, true, 2U, 9U, false);
+  CHECK(timing.delta_sum_us == UINT64_MAX && timing.saturated);
+}
+
 static void test_randomized(void) {
   uint8_t bytes[WIFI_CAPTURE_PREFIX_MAX]; uint32_t state = 0x6d2b79f5U;
   for (unsigned n = 0; n < 100000; ++n) {
@@ -657,6 +737,15 @@ static void test_randomized(void) {
         }
       }
     }
+    wifi_timing_state_t timing;
+    const uint32_t epoch = (state & 3U) + 1U;
+    wifi_timing_state_init(&timing, epoch, state >> 8U);
+    (void)wifi_timing_observe(&timing, state, true, epoch, state >> 8U,
+                              false);
+    const wifi_timing_result_t timing_result = wifi_timing_observe(
+        &timing, state * 33U, true, epoch, state >> 8U, false);
+    CHECK(timing_result.delta_valid);
+    CHECK(timing.valid_deltas == 1U && timing.invalid_deltas == 1U);
   }
 }
 
@@ -670,6 +759,8 @@ int main(void) {
   test_stage4_truncation_and_invalid();
   test_stage5_rf_helpers();
   test_stage5_controlled_source();
+  test_stage6_timing_golden_vectors();
+  test_stage6_injected_discontinuities();
   test_randomized();
   printf("PASS: %u assertions; event=%zu bytes; queue=%zu bytes\n",
          tests_run, sizeof(wifi_capture_event_t), sizeof(wifi_capture_queue_t));

@@ -1,6 +1,6 @@
 # PROJECT BLACKSHEEP Sensors — Versioned Development Roadmap
 
-**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–4 complete; Stage 5 implemented/provisionally characterized with integrated qualification pending Stage 9
+**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–4 and Stage 6 complete; Stage 5 implemented/provisionally characterized with integrated qualification pending Stage 9
 **Repository:** `sudorgherd/blacksheep-sensors`
 **Initial hardware:** 2× ESP32-C5 development boards
 **Target integration point:** ARGUS REDLINE v1.0
@@ -119,6 +119,15 @@ lengths, formal measured geometry, and any missing band/stability evidence are
 preserved for Stage 9 integrated semi-deployment qualification. This explicit
 sequencing checkpoint permits Stages 6–8 to proceed without erasing or relaxing
 the original criteria.
+
+Stage 6 implements local receive-time primitives only: explicit capture
+epochs, wrap-safe local microsecond deltas, drop/channel discontinuities, and
+bounded event counts. It does not define behavioral profiles or claim
+cross-C5/cross-node synchronization.
+
+Stage 6 is complete after exact host wrap/injected-clock coverage, controlled
+periodic, representative, and burst validation on both bands, and the complete
+20-environment firmware regression.
 
 ## v0.3.0 — Sensor Observation Model
 

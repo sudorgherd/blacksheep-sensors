@@ -44,7 +44,11 @@ static const uint8_t stage5_controlled_bssid[WIFI_ADDRESS_OCTETS] =
 #endif
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_STAGE5_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_STAGE6_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_V020_STAGE6"
+#elif defined(WIFI_STAGE6_CAPTURE)
+#define SENSOR_ROLE "C5_24GHZ_V020_STAGE6"
+#elif defined(WIFI_STAGE5_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_V020_STAGE5"
 #elif defined(WIFI_STAGE5_CAPTURE)
 #define SENSOR_ROLE "C5_24GHZ_V020_STAGE5"
@@ -341,6 +345,10 @@ typedef struct {
   wifi_signed_aggregate_t controlled_rssi;
   wifi_signed_aggregate_t controlled_noise_floor;
   uint64_t controlled_channel_comparison[4];
+#ifdef WIFI_STAGE6_CAPTURE
+  wifi_timing_state_t receive_timing;
+  wifi_timing_state_t controlled_timing;
+#endif
 #endif
 #endif
 #endif
@@ -366,6 +374,9 @@ static volatile bool stage1_accepting;
 static volatile bool stage1_worker_running;
 static stage1_stats_t stage1_stats;
 static portMUX_TYPE stage1_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+#ifdef WIFI_STAGE6_CAPTURE
+static uint32_t stage6_epoch_counter;
+#endif
 
 _Static_assert(WIFI_CAPTURE_PREFIX_MAX == 40U, "Stage 1 prefix bound changed");
 _Static_assert(WIFI_CAPTURE_QUEUE_CAPACITY == 128U, "Stage 1 queue bound changed");
@@ -533,6 +544,12 @@ static void stage1_worker(void *unused) {
     switch (parsed.status) {
       case WIFI_PARSE_OK:
         stage1_increment(&stage1_stats.parser_ok);
+#ifdef WIFI_STAGE6_CAPTURE
+        (void)wifi_timing_observe(&stage1_stats.receive_timing,
+                                  event.timestamp_us, true,
+                                  stage6_epoch_counter, stage1_stats.drops,
+                                  false);
+#endif
 #ifdef WIFI_STAGE2_CAPTURE
         stage1_increment(&stage1_stats.subtype[parsed.frame_control.type]
                                                [parsed.frame_control.subtype]);
@@ -636,6 +653,12 @@ static void stage1_worker(void *unused) {
                                       event.noise_floor);
             stage1_increment(
                 &stage1_stats.controlled_channel_comparison[channel_comparison]);
+#ifdef WIFI_STAGE6_CAPTURE
+            (void)wifi_timing_observe(&stage1_stats.controlled_timing,
+                                      event.timestamp_us, true,
+                                      stage6_epoch_counter,
+                                      stage1_stats.drops, false);
+#endif
           } else if (controlled == WIFI_CONTROLLED_SOURCE_NONMATCH) {
             stage1_increment(&stage1_stats.controlled_nonmatched);
           } else if (controlled == WIFI_CONTROLLED_SOURCE_ROLE_UNAVAILABLE) {
@@ -682,6 +705,14 @@ static void stage1_worker(void *unused) {
 
 static bool stage1_start(void) {
   memset(&stage1_stats, 0, sizeof(stage1_stats));
+#ifdef WIFI_STAGE6_CAPTURE
+  ++stage6_epoch_counter;
+  if (stage6_epoch_counter == 0U) ++stage6_epoch_counter;
+  wifi_timing_state_init(&stage1_stats.receive_timing, stage6_epoch_counter,
+                         0U);
+  wifi_timing_state_init(&stage1_stats.controlled_timing,
+                         stage6_epoch_counter, 0U);
+#endif
   stage1_queue = xQueueCreateStatic(WIFI_CAPTURE_QUEUE_CAPACITY,
                                     sizeof(wifi_capture_event_t),
                                     stage1_queue_storage,
@@ -1097,6 +1128,41 @@ static bool wifi_band_validation(void) {
          summary.controlled_channel_comparison[WIFI_CHANNEL_CONTEXT_MISMATCH],
          summary.controlled_channel_comparison[WIFI_CHANNEL_CONTEXT_UNAVAILABLE],
          summary.controlled_channel_comparison[WIFI_CHANNEL_CONTEXT_UNSUPPORTED]);
+#ifdef WIFI_STAGE6_CAPTURE
+  printf("Stage 6 local timing: epoch=%" PRIu32 " events=%" PRIu64
+         " valid-deltas=%" PRIu64 " invalid-deltas=%" PRIu64
+         " min/max/mean=%" PRIu32 "/%" PRIu32 "/%" PRIu64 " us\n",
+         summary.receive_timing.epoch_id, summary.receive_timing.events,
+         summary.receive_timing.valid_deltas,
+         summary.receive_timing.invalid_deltas,
+         summary.receive_timing.delta_min_us,
+         summary.receive_timing.delta_max_us,
+         summary.receive_timing.valid_deltas == 0U
+             ? 0U
+             : summary.receive_timing.delta_sum_us /
+                   summary.receive_timing.valid_deltas);
+  printf("Stage 6 local discontinuities: epoch=%" PRIu64
+         " drop=%" PRIu64 " channel=%" PRIu64 " saturated=%s\n",
+         summary.receive_timing.epoch_boundaries,
+         summary.receive_timing.drop_discontinuities,
+         summary.receive_timing.channel_boundaries,
+         summary.receive_timing.saturated ? "yes" : "no");
+  printf("Stage 6 controlled Beacon timing: enabled=%s events=%" PRIu64
+         " valid-deltas=%" PRIu64 " invalid-deltas=%" PRIu64
+         " min/max/mean=%" PRIu32 "/%" PRIu32 "/%" PRIu64 " us"
+         " drop-discontinuities=%" PRIu64 "\n",
+         WIFI_STAGE5_CONTROLLED_SOURCE_ENABLED ? "yes" : "no",
+         summary.controlled_timing.events,
+         summary.controlled_timing.valid_deltas,
+         summary.controlled_timing.invalid_deltas,
+         summary.controlled_timing.delta_min_us,
+         summary.controlled_timing.delta_max_us,
+         summary.controlled_timing.valid_deltas == 0U
+             ? 0U
+             : summary.controlled_timing.delta_sum_us /
+                   summary.controlled_timing.valid_deltas,
+         summary.controlled_timing.drop_discontinuities);
+#endif
 #endif
 #endif
 #endif
@@ -1192,6 +1258,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_STAGE6_CAPTURE)
+  printf("Wi-Fi v0.2.0 Stage 6 validation: %s\n",
 #elif defined(WIFI_STAGE5_CAPTURE)
   printf("Wi-Fi v0.2.0 Stage 5 validation: %s\n",
 #elif defined(WIFI_STAGE4_CAPTURE)

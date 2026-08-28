@@ -5,6 +5,9 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- v0.2.0 Stage 6 completed with local receive-timing characterization,
+  explicit epochs, exact 32-bit wrap arithmetic, drop-aware adjacency, bounded
+  worker-side timing aggregates, and controlled-Beacon periodic validation
 - v0.2.0 Stage 5 provisionally checkpointed with pure supported-channel/frequency
   mapping, bounded worker-side RF aggregation, validation-only controlled-Beacon
   selection, and controlled dual-band residential characterization; original
