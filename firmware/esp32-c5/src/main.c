@@ -44,7 +44,11 @@ static const uint8_t stage5_controlled_bssid[WIFI_ADDRESS_OCTETS] =
 #endif
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_STAGE6_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_STAGE7_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_V020_STAGE7"
+#elif defined(WIFI_STAGE7_CAPTURE)
+#define SENSOR_ROLE "C5_24GHZ_V020_STAGE7"
+#elif defined(WIFI_STAGE6_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_V020_STAGE6"
 #elif defined(WIFI_STAGE6_CAPTURE)
 #define SENSOR_ROLE "C5_24GHZ_V020_STAGE6"
@@ -348,6 +352,18 @@ typedef struct {
 #ifdef WIFI_STAGE6_CAPTURE
   wifi_timing_state_t receive_timing;
   wifi_timing_state_t controlled_timing;
+#ifdef WIFI_STAGE7_CAPTURE
+  uint64_t phy_format[16];
+  uint64_t phy_format_by_class[3][16];
+  uint64_t beacon_phy_format[16];
+  uint64_t controlled_beacon_phy_format[16];
+  uint64_t phy_format_invalid;
+  uint64_t phy_rate_kind[3];
+  uint64_t phy_siga1_valid;
+  uint64_t phy_siga2_valid;
+  uint64_t phy_sigb_length_valid;
+  uint64_t phy_channel_estimate_valid;
+#endif
 #endif
 #endif
 #endif
@@ -446,13 +462,22 @@ static void stage1_rx_callback(void *buffer,
       .noise_floor = rx->noise_floor,
       .channel = rx->channel,
       .secondary_channel = rx->second,
+      .phy_format = rx->cur_bb_format,
+      .phy_rate = rx->rate,
       .timestamp_us = rx->timestamp,
+      .phy_siga1 = rx->he_siga1,
+      .phy_siga2 = rx->he_siga2,
+      .phy_sigb_len = rx->sigb_len,
+      .channel_estimate_len = rx->rx_channel_estimate_len,
       .sig_len = rx->sig_len,
       .dump_len = rx->dump_len,
       .rx_state = rx->rx_state,
       .rxend_state = rx->rxend_state,
       .callback_class = (uint8_t)packet_type,
   };
+  if (rx->rx_channel_estimate_info_vld != 0U) {
+    event.phy_flags |= WIFI_CAPTURE_PHY_FLAG_CHANNEL_ESTIMATE_VALID;
+  }
   if (rx->rx_state != 0U || rx->rxend_state != 0U) {
     portENTER_CRITICAL(&stage1_stats_lock);
     stage1_increment(&stage1_stats.failed_rx);
@@ -549,6 +574,39 @@ static void stage1_worker(void *unused) {
                                   event.timestamp_us, true,
                                   stage6_epoch_counter, stage1_stats.drops,
                                   false);
+#ifdef WIFI_STAGE7_CAPTURE
+        {
+          const wifi_phy_metadata_t phy = wifi_normalize_phy_metadata(
+              event.phy_format, event.phy_rate, event.phy_siga1,
+              event.phy_siga2, event.phy_sigb_len,
+              (event.phy_flags &
+               WIFI_CAPTURE_PHY_FLAG_CHANNEL_ESTIMATE_VALID) != 0U,
+              event.channel_estimate_len);
+          if (phy.format_valid) {
+            stage1_increment(&stage1_stats.phy_format[phy.format]);
+            if (parsed.frame_control.type < 3U) {
+              stage1_increment(
+                  &stage1_stats.phy_format_by_class[parsed.frame_control.type]
+                                                    [phy.format]);
+            }
+            if (parsed.frame_control.type == 0U &&
+                parsed.frame_control.subtype == 8U) {
+              stage1_increment(&stage1_stats.beacon_phy_format[phy.format]);
+            }
+            stage1_increment(&stage1_stats.phy_rate_kind[phy.rate_kind]);
+          } else {
+            stage1_increment(&stage1_stats.phy_format_invalid);
+          }
+          if (phy.siga1_valid)
+            stage1_increment(&stage1_stats.phy_siga1_valid);
+          if (phy.siga2_valid)
+            stage1_increment(&stage1_stats.phy_siga2_valid);
+          if (phy.sigb_length_valid)
+            stage1_increment(&stage1_stats.phy_sigb_length_valid);
+          if (phy.channel_estimate_valid)
+            stage1_increment(&stage1_stats.phy_channel_estimate_valid);
+        }
+#endif
 #endif
 #ifdef WIFI_STAGE2_CAPTURE
         stage1_increment(&stage1_stats.subtype[parsed.frame_control.type]
@@ -653,6 +711,12 @@ static void stage1_worker(void *unused) {
                                       event.noise_floor);
             stage1_increment(
                 &stage1_stats.controlled_channel_comparison[channel_comparison]);
+#ifdef WIFI_STAGE7_CAPTURE
+            if (wifi_phy_format_recognized(event.phy_format)) {
+              stage1_increment(
+                  &stage1_stats.controlled_beacon_phy_format[event.phy_format]);
+            }
+#endif
 #ifdef WIFI_STAGE6_CAPTURE
             (void)wifi_timing_observe(&stage1_stats.controlled_timing,
                                       event.timestamp_us, true,
@@ -971,7 +1035,10 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi promiscuous shutdown: PASS\n");
 #ifdef WIFI_STAGE1_CAPTURE
   const bool drained = stage1_stop_and_drain();
-  const stage1_stats_t summary = stage1_stats;
+  /* The worker is stopped and the queue is drained, so the static aggregate is
+   * stable.  Refer to it directly: Stage 7's bounded format matrices make a
+   * full automatic snapshot too large for the ESP-IDF main-task stack. */
+#define summary stage1_stats
   const uint64_t attempts = summary.enqueued + summary.drops;
   const uint64_t average_us = summary.duration_samples == 0U
                                   ? 0U
@@ -1162,6 +1229,62 @@ static bool wifi_band_validation(void) {
              : summary.controlled_timing.delta_sum_us /
                    summary.controlled_timing.valid_deltas,
          summary.controlled_timing.drop_discontinuities);
+#ifdef WIFI_STAGE7_CAPTURE
+  printf("Stage 7 PHY formats: 11b=%" PRIu64 " 11a/g=%" PRIu64
+         " HT=%" PRIu64 " VHT=%" PRIu64 " HE-SU=%" PRIu64
+         " HE-MU=%" PRIu64 " HE-ERSU=%" PRIu64 " HE-TB=%" PRIu64
+         " VHT-MU=%" PRIu64 " invalid=%" PRIu64 "\n",
+         summary.phy_format[WIFI_PHY_FORMAT_11B],
+         summary.phy_format[WIFI_PHY_FORMAT_11A_G],
+         summary.phy_format[WIFI_PHY_FORMAT_HT],
+         summary.phy_format[WIFI_PHY_FORMAT_VHT],
+         summary.phy_format[WIFI_PHY_FORMAT_HE_SU],
+         summary.phy_format[WIFI_PHY_FORMAT_HE_MU],
+         summary.phy_format[WIFI_PHY_FORMAT_HE_ERSU],
+         summary.phy_format[WIFI_PHY_FORMAT_HE_TB],
+         summary.phy_format[WIFI_PHY_FORMAT_VHT_MU],
+         summary.phy_format_invalid);
+  printf("Stage 7 public rate: unavailable=%" PRIu64 " 11b=%" PRIu64
+         " L-SIG=%" PRIu64 "\n",
+         summary.phy_rate_kind[WIFI_PHY_RATE_UNAVAILABLE],
+         summary.phy_rate_kind[WIFI_PHY_RATE_11B],
+         summary.phy_rate_kind[WIFI_PHY_RATE_LSIG]);
+  printf("Stage 7 Beacon formats: 11b=%" PRIu64 " 11a/g=%" PRIu64
+         " HT=%" PRIu64 " VHT=%" PRIu64 " HE-SU=%" PRIu64 "\n",
+         summary.beacon_phy_format[WIFI_PHY_FORMAT_11B],
+         summary.beacon_phy_format[WIFI_PHY_FORMAT_11A_G],
+         summary.beacon_phy_format[WIFI_PHY_FORMAT_HT],
+         summary.beacon_phy_format[WIFI_PHY_FORMAT_VHT],
+         summary.beacon_phy_format[WIFI_PHY_FORMAT_HE_SU]);
+  printf("Stage 7 data formats: 11b=%" PRIu64 " 11a/g=%" PRIu64
+         " HT=%" PRIu64 " VHT=%" PRIu64 " HE-SU=%" PRIu64
+         " HE-MU=%" PRIu64 " HE-ERSU=%" PRIu64 " HE-TB=%" PRIu64
+         " VHT-MU=%" PRIu64 "\n",
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_11B],
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_11A_G],
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_HT],
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_VHT],
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_HE_SU],
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_HE_MU],
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_HE_ERSU],
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_HE_TB],
+         summary.phy_format_by_class[2][WIFI_PHY_FORMAT_VHT_MU]);
+  printf("Stage 7 controlled Beacon formats: 11b=%" PRIu64
+         " 11a/g=%" PRIu64 " HT=%" PRIu64 " VHT=%" PRIu64
+         " HE-SU=%" PRIu64 "\n",
+         summary.controlled_beacon_phy_format[WIFI_PHY_FORMAT_11B],
+         summary.controlled_beacon_phy_format[WIFI_PHY_FORMAT_11A_G],
+         summary.controlled_beacon_phy_format[WIFI_PHY_FORMAT_HT],
+         summary.controlled_beacon_phy_format[WIFI_PHY_FORMAT_VHT],
+         summary.controlled_beacon_phy_format[WIFI_PHY_FORMAT_HE_SU]);
+  printf("Stage 7 public raw metadata: SIG-A1-valid=%" PRIu64
+         " SIG-A2-valid=%" PRIu64 " SIG-B-length-valid=%" PRIu64
+         " channel-estimate-valid=%" PRIu64 "\n",
+         summary.phy_siga1_valid, summary.phy_siga2_valid,
+         summary.phy_sigb_length_valid,
+         summary.phy_channel_estimate_valid);
+  printf("Stage 7 decoded fields: MCS/BW/GI/coding/STBC/aggregation/NSS=unavailable-publicly\n");
+#endif
 #endif
 #endif
 #endif
@@ -1183,6 +1306,7 @@ static bool wifi_band_validation(void) {
          summary.duration_max_us, average_us);
   printf("Stage 1 counters saturated: %s\n", summary.saturated ? "yes" : "no");
   const bool callbacks_observed = summary.callbacks > 0U;
+#undef summary
 #elif defined(WIFI_CHANNEL_CONTROL_VALIDATION)
   printf("Wi-Fi channel-control callbacks: %" PRIu32
          " across %u/%u dwells\n",
@@ -1258,6 +1382,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_STAGE7_CAPTURE)
+  printf("Wi-Fi v0.2.0 Stage 7 validation: %s\n",
 #elif defined(WIFI_STAGE6_CAPTURE)
   printf("Wi-Fi v0.2.0 Stage 6 validation: %s\n",
 #elif defined(WIFI_STAGE5_CAPTURE)

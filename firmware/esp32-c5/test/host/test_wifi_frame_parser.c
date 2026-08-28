@@ -684,6 +684,60 @@ static void test_stage6_injected_discontinuities(void) {
   CHECK(timing.delta_sum_us == UINT64_MAX && timing.saturated);
 }
 
+static void test_stage7_phy_metadata(void) {
+  const uint8_t recognized[] = {0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 11U};
+  for (size_t i = 0; i < sizeof(recognized); ++i) {
+    const uint8_t format = recognized[i];
+    CHECK(wifi_phy_format_recognized(format));
+    wifi_phy_metadata_t phy = wifi_normalize_phy_metadata(
+        format, 0U, 0x11223344U, 0x5566U, 37U, true, 19U);
+    CHECK(phy.format_valid && phy.format == (wifi_phy_format_t)format);
+    CHECK(phy.rate_valid && phy.rate_raw == 0U);
+    CHECK(phy.rate_kind == (format == WIFI_PHY_FORMAT_11B
+                                ? WIFI_PHY_RATE_11B
+                                : WIFI_PHY_RATE_LSIG));
+    CHECK(phy.siga1_valid == (format >= WIFI_PHY_FORMAT_HT));
+    CHECK(phy.siga2_valid ==
+          (format >= WIFI_PHY_FORMAT_HE_SU &&
+           format <= WIFI_PHY_FORMAT_HE_TB));
+    CHECK(phy.sigb_length_valid == (format == WIFI_PHY_FORMAT_HE_MU));
+    CHECK(phy.channel_estimate_valid && phy.channel_estimate_length == 19U);
+  }
+  for (uint8_t format = 0U; format < 16U; ++format) {
+    const bool expected = format <= 7U || format == 11U;
+    CHECK(wifi_phy_format_recognized(format) == expected);
+    wifi_phy_metadata_t phy = wifi_normalize_phy_metadata(
+        format, 31U, UINT32_MAX, UINT16_MAX, 1023U, false, 1023U);
+    CHECK(phy.format_valid == expected);
+    if (expected) {
+      CHECK(phy.rate_valid && phy.rate_raw == 31U);
+      CHECK(!phy.channel_estimate_valid);
+    } else {
+      CHECK(!phy.rate_valid && phy.format == WIFI_PHY_FORMAT_UNKNOWN);
+      CHECK(!phy.siga1_valid && !phy.siga2_valid);
+      CHECK(!phy.sigb_length_valid && !phy.channel_estimate_valid);
+    }
+  }
+  wifi_phy_metadata_t invalid = wifi_normalize_phy_metadata(
+      WIFI_PHY_FORMAT_HT, 32U, 1U, 2U, 3U, true, 4U);
+  CHECK(!invalid.format_valid && !invalid.rate_valid);
+  CHECK(!invalid.siga1_valid && !invalid.channel_estimate_valid);
+
+  wifi_phy_metadata_t legacy = wifi_normalize_phy_metadata(
+      WIFI_PHY_FORMAT_11A_G, 13U, UINT32_MAX, UINT16_MAX, 99U, false, 0U);
+  CHECK(legacy.format_valid && legacy.rate_kind == WIFI_PHY_RATE_LSIG);
+  CHECK(!legacy.siga1_valid && !legacy.siga2_valid);
+  CHECK(!legacy.sigb_length_valid);
+  wifi_phy_metadata_t he_mu = wifi_normalize_phy_metadata(
+      WIFI_PHY_FORMAT_HE_MU, 7U, 0U, 0U, 0U, false, 0U);
+  CHECK(he_mu.siga1_valid && he_mu.siga2_valid);
+  CHECK(he_mu.sigb_length_valid && he_mu.sigb_length == 0U);
+  wifi_phy_metadata_t vht_mu = wifi_normalize_phy_metadata(
+      WIFI_PHY_FORMAT_VHT_MU, 9U, 0U, 0U, 5U, false, 0U);
+  CHECK(vht_mu.siga1_valid && !vht_mu.siga2_valid);
+  CHECK(!vht_mu.sigb_length_valid);
+}
+
 static void test_randomized(void) {
   uint8_t bytes[WIFI_CAPTURE_PREFIX_MAX]; uint32_t state = 0x6d2b79f5U;
   for (unsigned n = 0; n < 100000; ++n) {
@@ -746,6 +800,21 @@ static void test_randomized(void) {
         &timing, state * 33U, true, epoch, state >> 8U, false);
     CHECK(timing_result.delta_valid);
     CHECK(timing.valid_deltas == 1U && timing.invalid_deltas == 1U);
+    const uint8_t raw_format = (uint8_t)(state & 0x0fU);
+    const uint8_t raw_rate = (uint8_t)((state >> 4U) & 0x1fU);
+    const wifi_phy_metadata_t phy = wifi_normalize_phy_metadata(
+        raw_format, raw_rate, state, (uint16_t)state,
+        (uint16_t)(state & 0x03ffU), (state & 0x100U) != 0U,
+        (uint16_t)((state >> 10U) & 0x03ffU));
+    CHECK(phy.format_valid == wifi_phy_format_recognized(raw_format));
+    CHECK(!phy.format_valid || phy.rate_valid);
+    CHECK(phy.format_valid || (!phy.rate_valid && !phy.siga1_valid &&
+                               !phy.siga2_valid &&
+                               !phy.sigb_length_valid));
+    CHECK(!phy.siga2_valid ||
+          (raw_format >= WIFI_PHY_FORMAT_HE_SU &&
+           raw_format <= WIFI_PHY_FORMAT_HE_TB));
+    CHECK(!phy.sigb_length_valid || raw_format == WIFI_PHY_FORMAT_HE_MU);
   }
 }
 
@@ -761,6 +830,7 @@ int main(void) {
   test_stage5_controlled_source();
   test_stage6_timing_golden_vectors();
   test_stage6_injected_discontinuities();
+  test_stage7_phy_metadata();
   test_randomized();
   printf("PASS: %u assertions; event=%zu bytes; queue=%zu bytes\n",
          tests_run, sizeof(wifi_capture_event_t), sizeof(wifi_capture_queue_t));

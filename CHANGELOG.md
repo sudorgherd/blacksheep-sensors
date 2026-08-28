@@ -5,6 +5,9 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- v0.2.0 Stage 7 completed with fail-closed public ESP32-C5 PHY-format
+  normalization, conditional rate/raw-SIG scalar handling, both-band physical
+  evidence, and no private ESP-IDF dependencies or raw-SIG decoder
 - v0.2.0 Stage 6 completed with local receive-timing characterization,
   explicit epochs, exact 32-bit wrap arithmetic, drop-aware adjacency, bounded
   worker-side timing aggregates, and controlled-Beacon periodic validation

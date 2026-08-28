@@ -534,6 +534,51 @@ wifi_timing_result_t wifi_timing_observe(
   return result;
 }
 
+bool wifi_phy_format_recognized(uint8_t raw_format) {
+  return raw_format <= WIFI_PHY_FORMAT_HE_TB ||
+         raw_format == WIFI_PHY_FORMAT_VHT_MU;
+}
+
+wifi_phy_metadata_t wifi_normalize_phy_metadata(
+    uint8_t raw_format, uint8_t raw_rate, uint32_t siga1, uint16_t siga2,
+    uint16_t sigb_length, bool channel_estimate_valid,
+    uint16_t channel_estimate_length) {
+  wifi_phy_metadata_t result = {.format = WIFI_PHY_FORMAT_UNKNOWN};
+  if (!wifi_phy_format_recognized(raw_format) || raw_rate > 31U) {
+    return result;
+  }
+  result.format_valid = true;
+  result.format = (wifi_phy_format_t)raw_format;
+  result.rate_valid = true;
+  result.rate_kind = raw_format == WIFI_PHY_FORMAT_11B
+                         ? WIFI_PHY_RATE_11B
+                         : WIFI_PHY_RATE_LSIG;
+  result.rate_raw = raw_rate;
+
+  /* Public ESP-IDF describes SIG-A1 as HE-SIG-A1, HT-SIG, or VHT-SIG.
+   * It is therefore unavailable for the two non-HT formats. */
+  if (raw_format >= WIFI_PHY_FORMAT_HT) {
+    result.siga1_valid = true;
+    result.siga1_raw = siga1;
+  }
+  /* The public description of SIG-A2 is specifically HE-SIG-A2. */
+  if (raw_format >= WIFI_PHY_FORMAT_HE_SU &&
+      raw_format <= WIFI_PHY_FORMAT_HE_TB) {
+    result.siga2_valid = true;
+    result.siga2_raw = siga2;
+  }
+  /* SIG-B exists only in the public model for multi-user HE reception. */
+  if (raw_format == WIFI_PHY_FORMAT_HE_MU) {
+    result.sigb_length_valid = true;
+    result.sigb_length = sigb_length;
+  }
+  if (channel_estimate_valid) {
+    result.channel_estimate_valid = true;
+    result.channel_estimate_length = channel_estimate_length;
+  }
+  return result;
+}
+
 wifi_controlled_source_result_t wifi_match_controlled_ap_beacon(
     const wifi_layout_result_t *parsed,
     const wifi_address_result_t *addresses,

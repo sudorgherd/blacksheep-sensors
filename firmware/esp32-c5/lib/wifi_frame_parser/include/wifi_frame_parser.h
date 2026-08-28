@@ -213,6 +213,41 @@ typedef struct {
 } wifi_timing_state_t;
 
 typedef enum {
+  WIFI_PHY_FORMAT_11B = 0,
+  WIFI_PHY_FORMAT_11A_G = 1,
+  WIFI_PHY_FORMAT_HT = 2,
+  WIFI_PHY_FORMAT_VHT = 3,
+  WIFI_PHY_FORMAT_HE_SU = 4,
+  WIFI_PHY_FORMAT_HE_MU = 5,
+  WIFI_PHY_FORMAT_HE_ERSU = 6,
+  WIFI_PHY_FORMAT_HE_TB = 7,
+  WIFI_PHY_FORMAT_VHT_MU = 11,
+  WIFI_PHY_FORMAT_UNKNOWN = 255
+} wifi_phy_format_t;
+
+typedef enum {
+  WIFI_PHY_RATE_UNAVAILABLE = 0,
+  WIFI_PHY_RATE_11B,
+  WIFI_PHY_RATE_LSIG
+} wifi_phy_rate_kind_t;
+
+typedef struct {
+  bool format_valid;
+  wifi_phy_format_t format;
+  bool rate_valid;
+  wifi_phy_rate_kind_t rate_kind;
+  uint8_t rate_raw;
+  bool siga1_valid;
+  uint32_t siga1_raw;
+  bool siga2_valid;
+  uint16_t siga2_raw;
+  bool sigb_length_valid;
+  uint16_t sigb_length;
+  bool channel_estimate_valid;
+  uint16_t channel_estimate_length;
+} wifi_phy_metadata_t;
+
+typedef enum {
   WIFI_CONTROLLED_SOURCE_MATCH = 0,
   WIFI_CONTROLLED_SOURCE_NONMATCH,
   WIFI_CONTROLLED_SOURCE_ROLE_UNAVAILABLE,
@@ -225,7 +260,13 @@ typedef struct {
   int8_t noise_floor;
   uint8_t channel;
   uint8_t secondary_channel;
+  uint8_t phy_format;
+  uint8_t phy_rate;
   uint32_t timestamp_us;
+  uint32_t phy_siga1;
+  uint16_t phy_siga2;
+  uint16_t phy_sigb_len;
+  uint16_t channel_estimate_len;
   uint16_t sig_len;
   uint16_t dump_len;
   uint8_t rx_state;
@@ -233,10 +274,14 @@ typedef struct {
   uint8_t callback_class;
   uint8_t captured_length;
   uint8_t flags;
-  uint8_t reserved;
+  uint8_t phy_flags;
   uint64_t event_number;
   uint8_t prefix[WIFI_CAPTURE_PREFIX_MAX];
 } wifi_capture_event_t;
+
+enum {
+  WIFI_CAPTURE_PHY_FLAG_CHANNEL_ESTIMATE_VALID = 1U << 0
+};
 
 enum {
   WIFI_CAPTURE_FLAG_LENGTH_DISCREPANCY = 1U << 0,
@@ -278,6 +323,11 @@ void wifi_timing_state_init(wifi_timing_state_t *state, uint32_t epoch_id,
 wifi_timing_result_t wifi_timing_observe(
     wifi_timing_state_t *state, uint32_t timestamp_us, bool timestamp_valid,
     uint32_t epoch_id, uint64_t drop_count, bool channel_boundary);
+bool wifi_phy_format_recognized(uint8_t raw_format);
+wifi_phy_metadata_t wifi_normalize_phy_metadata(
+    uint8_t raw_format, uint8_t raw_rate, uint32_t siga1, uint16_t siga2,
+    uint16_t sigb_length, bool channel_estimate_valid,
+    uint16_t channel_estimate_length);
 wifi_controlled_source_result_t wifi_match_controlled_ap_beacon(
     const wifi_layout_result_t *parsed,
     const wifi_address_result_t *addresses,
