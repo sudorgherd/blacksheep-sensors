@@ -150,6 +150,42 @@ typedef struct {
   bool length_discrepancy;
 } wifi_copy_length_result_t;
 
+typedef enum {
+  WIFI_RF_BAND_UNKNOWN = 0,
+  WIFI_RF_BAND_2_4_GHZ,
+  WIFI_RF_BAND_5_GHZ
+} wifi_rf_band_t;
+
+typedef struct {
+  bool valid;
+  wifi_rf_band_t band;
+  uint8_t channel;
+  uint16_t center_frequency_mhz;
+} wifi_channel_context_t;
+
+typedef enum {
+  WIFI_CHANNEL_CONTEXT_MATCH = 0,
+  WIFI_CHANNEL_CONTEXT_MISMATCH,
+  WIFI_CHANNEL_CONTEXT_UNAVAILABLE,
+  WIFI_CHANNEL_CONTEXT_UNSUPPORTED
+} wifi_channel_comparison_t;
+
+typedef struct {
+  uint64_t samples;
+  int64_t sum;
+  int32_t minimum;
+  int32_t maximum;
+  bool saturated;
+} wifi_signed_aggregate_t;
+
+typedef enum {
+  WIFI_CONTROLLED_SOURCE_MATCH = 0,
+  WIFI_CONTROLLED_SOURCE_NONMATCH,
+  WIFI_CONTROLLED_SOURCE_ROLE_UNAVAILABLE,
+  WIFI_CONTROLLED_SOURCE_WRONG_SUBTYPE,
+  WIFI_CONTROLLED_SOURCE_INVALID
+} wifi_controlled_source_result_t;
+
 typedef struct {
   int8_t rssi;
   int8_t noise_floor;
@@ -196,6 +232,18 @@ bool wifi_read_le16(const uint8_t *bytes, size_t length, size_t offset,
 wifi_layout_result_t wifi_parse_layout(const uint8_t *bytes, size_t length);
 wifi_copy_length_result_t wifi_capture_copy_length(uint16_t sig_len,
                                                    uint16_t dump_len);
+wifi_channel_context_t wifi_channel_context(wifi_rf_band_t band,
+                                             uint8_t channel);
+wifi_channel_comparison_t wifi_compare_channel_context(
+    wifi_rf_band_t configured_band, uint8_t configured_channel,
+    uint8_t received_channel);
+void wifi_signed_aggregate_add(wifi_signed_aggregate_t *aggregate,
+                               int32_t value);
+wifi_controlled_source_result_t wifi_match_controlled_ap_beacon(
+    const wifi_layout_result_t *parsed,
+    const wifi_address_result_t *addresses,
+    const uint8_t expected_transmitter[WIFI_ADDRESS_OCTETS],
+    const uint8_t expected_bssid[WIFI_ADDRESS_OCTETS]);
 wifi_parse_status_t wifi_validate_callback_class(uint8_t callback_class,
                                                  uint8_t frame_type);
 wifi_class_comparison_t wifi_compare_callback_class(

@@ -22,8 +22,33 @@
 #include "nvs_flash.h"
 #include "wifi_frame_parser.h"
 
+#if defined(WIFI_STAGE5_CAPTURE) && __has_include("stage5_local_config.h")
+#include "stage5_local_config.h"
+#endif
+
+#ifndef WIFI_STAGE5_CONTROLLED_SOURCE_ENABLED
+#define WIFI_STAGE5_CONTROLLED_SOURCE_ENABLED 0
+#endif
+
+#if WIFI_STAGE5_CONTROLLED_SOURCE_ENABLED
+#ifndef WIFI_STAGE5_CONTROLLED_TRANSMITTER
+#error "Controlled source enabled without WIFI_STAGE5_CONTROLLED_TRANSMITTER"
+#endif
+#ifndef WIFI_STAGE5_CONTROLLED_BSSID
+#error "Controlled source enabled without WIFI_STAGE5_CONTROLLED_BSSID"
+#endif
+static const uint8_t stage5_controlled_transmitter[WIFI_ADDRESS_OCTETS] =
+    WIFI_STAGE5_CONTROLLED_TRANSMITTER;
+static const uint8_t stage5_controlled_bssid[WIFI_ADDRESS_OCTETS] =
+    WIFI_STAGE5_CONTROLLED_BSSID;
+#endif
+
 #ifndef SENSOR_ROLE
-#if defined(WIFI_STAGE4_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_STAGE5_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_V020_STAGE5"
+#elif defined(WIFI_STAGE5_CAPTURE)
+#define SENSOR_ROLE "C5_24GHZ_V020_STAGE5"
+#elif defined(WIFI_STAGE4_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_V020_STAGE4"
 #elif defined(WIFI_STAGE4_CAPTURE)
 #define SENSOR_ROLE "C5_24GHZ_V020_STAGE4"
@@ -65,11 +90,18 @@
     defined(WIFI_STAGE1_CAPTURE)
 #define PASSIVE_VALIDATION_WINDOW_MS 8000
 #define CHANNEL_CONTROL_DWELL_MS 2000
-#ifdef WIFI_VALIDATION_5GHZ
+#if defined(WIFI_STAGE5_VALIDATION_CHANNEL) && !defined(WIFI_STAGE5_CAPTURE)
+#error "WIFI_STAGE5_VALIDATION_CHANNEL is restricted to Stage 5"
+#endif
+#ifdef WIFI_STAGE5_VALIDATION_CHANNEL
+#define PASSIVE_VALIDATION_CHANNEL WIFI_STAGE5_VALIDATION_CHANNEL
+#elif defined(WIFI_VALIDATION_5GHZ)
 #define PASSIVE_VALIDATION_CHANNEL 36
 #define CHANNEL_CONTROL_CHANNELS 36, 40, 44, 48
 #else
 #define PASSIVE_VALIDATION_CHANNEL 1
+#endif
+#ifndef CHANNEL_CONTROL_CHANNELS
 #define CHANNEL_CONTROL_CHANNELS 1, 6, 11
 #endif
 
@@ -292,6 +324,24 @@ typedef struct {
   uint16_t sequence_min;
   uint16_t sequence_max;
   bool sequence_observed;
+#ifdef WIFI_STAGE5_CAPTURE
+  wifi_signed_aggregate_t rssi;
+  wifi_signed_aggregate_t noise_floor;
+  uint64_t channel_comparison[4];
+  uint64_t secondary_none;
+  uint64_t secondary_above;
+  uint64_t secondary_below;
+  uint64_t secondary_other;
+  uint64_t controlled_eligible;
+  uint64_t controlled_matched;
+  uint64_t controlled_nonmatched;
+  uint64_t controlled_role_unavailable;
+  uint64_t controlled_wrong_subtype;
+  uint64_t controlled_invalid;
+  wifi_signed_aggregate_t controlled_rssi;
+  wifi_signed_aggregate_t controlled_noise_floor;
+  uint64_t controlled_channel_comparison[4];
+#endif
 #endif
 #endif
 #endif
@@ -546,6 +596,57 @@ static void stage1_worker(void *unused) {
                                  ? &stage1_stats.protected_set
                                  : &stage1_stats.protected_clear);
           }
+#ifdef WIFI_STAGE5_CAPTURE
+          wifi_signed_aggregate_add(&stage1_stats.rssi, event.rssi);
+          wifi_signed_aggregate_add(&stage1_stats.noise_floor,
+                                    event.noise_floor);
+#ifdef WIFI_VALIDATION_5GHZ
+          const wifi_rf_band_t configured_band = WIFI_RF_BAND_5_GHZ;
+#else
+          const wifi_rf_band_t configured_band = WIFI_RF_BAND_2_4_GHZ;
+#endif
+          const wifi_channel_comparison_t channel_comparison =
+              wifi_compare_channel_context(configured_band,
+                                           PASSIVE_VALIDATION_CHANNEL,
+                                           event.channel);
+          stage1_increment(&stage1_stats.channel_comparison[channel_comparison]);
+          if (event.secondary_channel == 0U) {
+            stage1_increment(&stage1_stats.secondary_none);
+          } else if (event.secondary_channel == 1U) {
+            stage1_increment(&stage1_stats.secondary_above);
+          } else if (event.secondary_channel == 2U) {
+            stage1_increment(&stage1_stats.secondary_below);
+          } else {
+            stage1_increment(&stage1_stats.secondary_other);
+          }
+#if WIFI_STAGE5_CONTROLLED_SOURCE_ENABLED
+          const wifi_controlled_source_result_t controlled =
+              wifi_match_controlled_ap_beacon(
+                  &parsed, &addresses, stage5_controlled_transmitter,
+                  stage5_controlled_bssid);
+          if (controlled == WIFI_CONTROLLED_SOURCE_MATCH ||
+              controlled == WIFI_CONTROLLED_SOURCE_NONMATCH) {
+            stage1_increment(&stage1_stats.controlled_eligible);
+          }
+          if (controlled == WIFI_CONTROLLED_SOURCE_MATCH) {
+            stage1_increment(&stage1_stats.controlled_matched);
+            wifi_signed_aggregate_add(&stage1_stats.controlled_rssi,
+                                      event.rssi);
+            wifi_signed_aggregate_add(&stage1_stats.controlled_noise_floor,
+                                      event.noise_floor);
+            stage1_increment(
+                &stage1_stats.controlled_channel_comparison[channel_comparison]);
+          } else if (controlled == WIFI_CONTROLLED_SOURCE_NONMATCH) {
+            stage1_increment(&stage1_stats.controlled_nonmatched);
+          } else if (controlled == WIFI_CONTROLLED_SOURCE_ROLE_UNAVAILABLE) {
+            stage1_increment(&stage1_stats.controlled_role_unavailable);
+          } else if (controlled == WIFI_CONTROLLED_SOURCE_WRONG_SUBTYPE) {
+            stage1_increment(&stage1_stats.controlled_wrong_subtype);
+          } else {
+            stage1_increment(&stage1_stats.controlled_invalid);
+          }
+#endif
+#endif
 #endif
         }
 #endif
@@ -924,6 +1025,79 @@ static bool wifi_band_validation(void) {
          summary.retry_set, summary.retry_clear,
          summary.more_fragments_set, summary.more_fragments_clear,
          summary.protected_set, summary.protected_clear);
+#ifdef WIFI_STAGE5_CAPTURE
+#ifdef WIFI_VALIDATION_5GHZ
+  const wifi_rf_band_t summary_band = WIFI_RF_BAND_5_GHZ;
+#else
+  const wifi_rf_band_t summary_band = WIFI_RF_BAND_2_4_GHZ;
+#endif
+  const wifi_channel_context_t channel_context =
+      wifi_channel_context(summary_band, effective_channel);
+  printf("Stage 5 RF context: band=%s configured-channel=%u frequency=%s",
+         summary_band == WIFI_RF_BAND_5_GHZ ? "5 GHz" : "2.4 GHz",
+         effective_channel, channel_context.valid ? "valid" : "unknown");
+  if (channel_context.valid) {
+    printf("/%u MHz", channel_context.center_frequency_mhz);
+  }
+  printf("\n");
+  printf("Stage 5 channel comparison: match=%" PRIu64
+         " mismatch=%" PRIu64 " unavailable=%" PRIu64
+         " unsupported=%" PRIu64 "\n",
+         summary.channel_comparison[WIFI_CHANNEL_CONTEXT_MATCH],
+         summary.channel_comparison[WIFI_CHANNEL_CONTEXT_MISMATCH],
+         summary.channel_comparison[WIFI_CHANNEL_CONTEXT_UNAVAILABLE],
+         summary.channel_comparison[WIFI_CHANNEL_CONTEXT_UNSUPPORTED]);
+  printf("Stage 5 RSSI: samples=%" PRIu64 " min/max/mean=%" PRId32
+         "/%" PRId32 "/%" PRId64 " dBm saturated=%s\n",
+         summary.rssi.samples, summary.rssi.minimum, summary.rssi.maximum,
+         summary.rssi.samples == 0U ? 0 : summary.rssi.sum /
+                                            (int64_t)summary.rssi.samples,
+         summary.rssi.saturated ? "yes" : "no");
+  printf("Stage 5 noise floor: samples=%" PRIu64 " min/max/mean=%" PRId32
+         "/%" PRId32 "/%" PRId64 " dBm saturated=%s\n",
+         summary.noise_floor.samples, summary.noise_floor.minimum,
+         summary.noise_floor.maximum,
+         summary.noise_floor.samples == 0U
+             ? 0
+             : summary.noise_floor.sum / (int64_t)summary.noise_floor.samples,
+         summary.noise_floor.saturated ? "yes" : "no");
+  printf("Stage 5 secondary channel: none/above/below/other=%" PRIu64
+         "/%" PRIu64 "/%" PRIu64 "/%" PRIu64 "\n",
+         summary.secondary_none, summary.secondary_above,
+         summary.secondary_below, summary.secondary_other);
+  printf("Stage 5 controlled source: enabled=%s eligible=%" PRIu64
+         " matched=%" PRIu64 " nonmatched=%" PRIu64
+         " role-unavailable=%" PRIu64 " wrong-subtype=%" PRIu64
+         " invalid=%" PRIu64 "\n",
+         WIFI_STAGE5_CONTROLLED_SOURCE_ENABLED ? "yes" : "no",
+         summary.controlled_eligible, summary.controlled_matched,
+         summary.controlled_nonmatched, summary.controlled_role_unavailable,
+         summary.controlled_wrong_subtype, summary.controlled_invalid);
+  printf("Stage 5 controlled RSSI: samples=%" PRIu64
+         " min/max/mean=%" PRId32 "/%" PRId32 "/%" PRId64 " dBm\n",
+         summary.controlled_rssi.samples, summary.controlled_rssi.minimum,
+         summary.controlled_rssi.maximum,
+         summary.controlled_rssi.samples == 0U
+             ? 0
+             : summary.controlled_rssi.sum /
+                   (int64_t)summary.controlled_rssi.samples);
+  printf("Stage 5 controlled noise floor: samples=%" PRIu64
+         " min/max/mean=%" PRId32 "/%" PRId32 "/%" PRId64 " dBm\n",
+         summary.controlled_noise_floor.samples,
+         summary.controlled_noise_floor.minimum,
+         summary.controlled_noise_floor.maximum,
+         summary.controlled_noise_floor.samples == 0U
+             ? 0
+             : summary.controlled_noise_floor.sum /
+                   (int64_t)summary.controlled_noise_floor.samples);
+  printf("Stage 5 controlled channel: match=%" PRIu64
+         " mismatch=%" PRIu64 " unavailable=%" PRIu64
+         " unsupported=%" PRIu64 "\n",
+         summary.controlled_channel_comparison[WIFI_CHANNEL_CONTEXT_MATCH],
+         summary.controlled_channel_comparison[WIFI_CHANNEL_CONTEXT_MISMATCH],
+         summary.controlled_channel_comparison[WIFI_CHANNEL_CONTEXT_UNAVAILABLE],
+         summary.controlled_channel_comparison[WIFI_CHANNEL_CONTEXT_UNSUPPORTED]);
+#endif
 #endif
 #endif
 #endif
@@ -1018,6 +1192,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_STAGE5_CAPTURE)
+  printf("Wi-Fi v0.2.0 Stage 5 validation: %s\n",
 #elif defined(WIFI_STAGE4_CAPTURE)
   printf("Wi-Fi v0.2.0 Stage 4 validation: %s\n",
 #elif defined(WIFI_STAGE3_CAPTURE)

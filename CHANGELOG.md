@@ -5,6 +5,10 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- v0.2.0 Stage 5 provisionally checkpointed with pure supported-channel/frequency
+  mapping, bounded worker-side RF aggregation, validation-only controlled-Beacon
+  selection, and controlled dual-band residential characterization; original
+  physical qualification remains open for Stage 9 integrated closure
 - v0.2.0 Stage 4 completed with bounded Sequence Control extraction and exact
   Retry, More Fragments, and Protected protocol-fact characterization
 - v0.2.0 Stage 3 completed with bounded raw address extraction, protocol-defined

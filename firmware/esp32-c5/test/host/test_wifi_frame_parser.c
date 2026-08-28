@@ -466,6 +466,144 @@ static void test_stage4_truncation_and_invalid(void) {
   CHECK(a.status == WIFI_PARSE_INVALID && !a.frame_control_flags_valid);
 }
 
+static void test_stage5_rf_helpers(void) {
+  for (uint8_t channel = 1U; channel <= 11U; ++channel) {
+    const wifi_channel_context_t context =
+        wifi_channel_context(WIFI_RF_BAND_2_4_GHZ, channel);
+    CHECK(context.valid);
+    CHECK(context.band == WIFI_RF_BAND_2_4_GHZ);
+    CHECK(context.channel == channel);
+    CHECK(context.center_frequency_mhz == (uint16_t)(2407U + 5U * channel));
+  }
+  const uint8_t channels_5ghz[] = {36U, 40U, 44U, 48U};
+  for (size_t index = 0U;
+       index < sizeof(channels_5ghz) / sizeof(channels_5ghz[0]); ++index) {
+    const uint8_t channel = channels_5ghz[index];
+    const wifi_channel_context_t context =
+        wifi_channel_context(WIFI_RF_BAND_5_GHZ, channel);
+    CHECK(context.valid);
+    CHECK(context.center_frequency_mhz == (uint16_t)(5000U + 5U * channel));
+  }
+  const uint8_t invalid_24[] = {0U, 12U, 14U, 36U, 255U};
+  for (size_t index = 0U;
+       index < sizeof(invalid_24) / sizeof(invalid_24[0]); ++index) {
+    CHECK(!wifi_channel_context(WIFI_RF_BAND_2_4_GHZ,
+                                invalid_24[index]).valid);
+  }
+  const uint8_t invalid_5[] = {0U, 1U, 6U, 11U, 32U, 52U, 149U, 233U};
+  for (size_t index = 0U;
+       index < sizeof(invalid_5) / sizeof(invalid_5[0]); ++index) {
+    CHECK(!wifi_channel_context(WIFI_RF_BAND_5_GHZ, invalid_5[index]).valid);
+  }
+  CHECK(!wifi_channel_context(WIFI_RF_BAND_UNKNOWN, 1U).valid);
+  CHECK(wifi_compare_channel_context(WIFI_RF_BAND_2_4_GHZ, 1U, 1U) ==
+        WIFI_CHANNEL_CONTEXT_MATCH);
+  CHECK(wifi_compare_channel_context(WIFI_RF_BAND_2_4_GHZ, 1U, 6U) ==
+        WIFI_CHANNEL_CONTEXT_MISMATCH);
+  CHECK(wifi_compare_channel_context(WIFI_RF_BAND_5_GHZ, 36U, 40U) ==
+        WIFI_CHANNEL_CONTEXT_MISMATCH);
+  CHECK(wifi_compare_channel_context(WIFI_RF_BAND_2_4_GHZ, 1U, 36U) ==
+        WIFI_CHANNEL_CONTEXT_UNSUPPORTED);
+  CHECK(wifi_compare_channel_context(WIFI_RF_BAND_UNKNOWN, 1U, 1U) ==
+        WIFI_CHANNEL_CONTEXT_UNAVAILABLE);
+  CHECK(wifi_compare_channel_context(WIFI_RF_BAND_5_GHZ, 0U, 36U) ==
+        WIFI_CHANNEL_CONTEXT_UNAVAILABLE);
+
+  wifi_signed_aggregate_t aggregate = {0};
+  wifi_signed_aggregate_add(&aggregate, -70);
+  wifi_signed_aggregate_add(&aggregate, -50);
+  wifi_signed_aggregate_add(&aggregate, -60);
+  CHECK(aggregate.samples == 3U);
+  CHECK(aggregate.minimum == -70 && aggregate.maximum == -50);
+  CHECK(aggregate.sum == -180 && !aggregate.saturated);
+  wifi_signed_aggregate_add(NULL, 1);
+  aggregate.sum = INT64_MAX;
+  wifi_signed_aggregate_add(&aggregate, 1);
+  CHECK(aggregate.saturated && aggregate.samples == 3U);
+
+  /* Stage 1 length safety stays independent from interpretation evidence. */
+  const uint16_t supplied[] = {64U, 128U, 512U, 1000U};
+  for (size_t index = 0U; index < sizeof(supplied) / sizeof(supplied[0]); ++index) {
+    const uint16_t sig = (uint16_t)(supplied[index] + 4U);
+    const uint16_t dump = (uint16_t)(sig + 4U);
+    const wifi_copy_length_result_t copy = wifi_capture_copy_length(sig, dump);
+    CHECK(copy.status == WIFI_PARSE_OK);
+    CHECK(copy.copy_length == WIFI_CAPTURE_PREFIX_MAX);
+    CHECK(copy.length_discrepancy);
+    CHECK(copy.copy_length <= sig && copy.copy_length <= dump);
+  }
+  CHECK(wifi_capture_copy_length(0U, 4U).status == WIFI_PARSE_INVALID);
+  CHECK(wifi_capture_copy_length(4U, 0U).status == WIFI_PARSE_INVALID);
+}
+
+static void test_stage5_controlled_source(void) {
+  uint8_t frame[WIFI_CAPTURE_PREFIX_MAX] = {0};
+  fill_addresses(frame);
+  put_le16(frame, 0U, make_fc(0U, 8U, false, false, false));
+  wifi_layout_result_t layout = wifi_parse_layout(frame, sizeof(frame));
+  wifi_address_result_t addresses =
+      wifi_resolve_addresses(frame, sizeof(frame), &layout);
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_MATCH);
+
+  uint8_t wrong[WIFI_ADDRESS_OCTETS];
+  memcpy(wrong, synthetic_addresses[0], sizeof(wrong));
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, wrong, synthetic_addresses[2]) ==
+        WIFI_CONTROLLED_SOURCE_NONMATCH);
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, synthetic_addresses[1], wrong) ==
+        WIFI_CONTROLLED_SOURCE_NONMATCH);
+
+  put_le16(frame, 0U, make_fc(0U, 4U, false, false, false));
+  layout = wifi_parse_layout(frame, sizeof(frame));
+  addresses = wifi_resolve_addresses(frame, sizeof(frame), &layout);
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_WRONG_SUBTYPE);
+  put_le16(frame, 0U, make_fc(2U, 0U, false, false, false));
+  layout = wifi_parse_layout(frame, sizeof(frame));
+  addresses = wifi_resolve_addresses(frame, sizeof(frame), &layout);
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_WRONG_SUBTYPE);
+  put_le16(frame, 0U, make_fc(1U, 13U, false, false, false));
+  layout = wifi_parse_layout(frame, sizeof(frame));
+  addresses = wifi_resolve_addresses(frame, sizeof(frame), &layout);
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_WRONG_SUBTYPE);
+
+  put_le16(frame, 0U, make_fc(0U, 8U, false, false, false));
+  layout = wifi_parse_layout(frame, sizeof(frame));
+  addresses = wifi_resolve_addresses(frame, sizeof(frame), &layout);
+  addresses.transmitter.valid = false;
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_ROLE_UNAVAILABLE);
+  addresses = wifi_resolve_addresses(frame, sizeof(frame), &layout);
+  addresses.bssid.valid = false;
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_ROLE_UNAVAILABLE);
+
+  layout = wifi_parse_layout(frame, 23U);
+  addresses = wifi_resolve_addresses(frame, 23U, &layout);
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_INVALID);
+  CHECK(wifi_match_controlled_ap_beacon(
+            NULL, &addresses, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_INVALID);
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, NULL, synthetic_addresses[1],
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_INVALID);
+  CHECK(wifi_match_controlled_ap_beacon(
+            &layout, &addresses, NULL,
+            synthetic_addresses[2]) == WIFI_CONTROLLED_SOURCE_INVALID);
+}
+
 static void test_randomized(void) {
   uint8_t bytes[WIFI_CAPTURE_PREFIX_MAX]; uint32_t state = 0x6d2b79f5U;
   for (unsigned n = 0; n < 100000; ++n) {
@@ -530,6 +668,8 @@ int main(void) {
   test_driver_group_comparison();
   test_stage4_bit_vectors(); test_stage4_applicability_and_offsets();
   test_stage4_truncation_and_invalid();
+  test_stage5_rf_helpers();
+  test_stage5_controlled_source();
   test_randomized();
   printf("PASS: %u assertions; event=%zu bytes; queue=%zu bytes\n",
          tests_run, sizeof(wifi_capture_event_t), sizeof(wifi_capture_queue_t));

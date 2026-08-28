@@ -9,6 +9,7 @@ sdkconfig.*
 *.log
 serial-captures/
 firmware-artifacts/
+firmware/esp32-c5/src/stage5_local_config.h
 *.bin
 *.elf
 *.map

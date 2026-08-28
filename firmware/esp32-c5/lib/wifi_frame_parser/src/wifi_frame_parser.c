@@ -411,6 +411,85 @@ wifi_copy_length_result_t wifi_capture_copy_length(uint16_t sig_len,
   return result;
 }
 
+wifi_channel_context_t wifi_channel_context(wifi_rf_band_t band,
+                                             uint8_t channel) {
+  wifi_channel_context_t result = {.band = band, .channel = channel};
+  if (band == WIFI_RF_BAND_2_4_GHZ && channel >= 1U && channel <= 11U) {
+    result.valid = true;
+    result.center_frequency_mhz = (uint16_t)(2407U + 5U * channel);
+  } else if (band == WIFI_RF_BAND_5_GHZ &&
+             (channel == 36U || channel == 40U || channel == 44U ||
+              channel == 48U)) {
+    result.valid = true;
+    result.center_frequency_mhz = (uint16_t)(5000U + 5U * channel);
+  }
+  return result;
+}
+
+wifi_channel_comparison_t wifi_compare_channel_context(
+    wifi_rf_band_t configured_band, uint8_t configured_channel,
+    uint8_t received_channel) {
+  if (configured_band == WIFI_RF_BAND_UNKNOWN || configured_channel == 0U ||
+      received_channel == 0U) {
+    return WIFI_CHANNEL_CONTEXT_UNAVAILABLE;
+  }
+  if (!wifi_channel_context(configured_band, configured_channel).valid ||
+      !wifi_channel_context(configured_band, received_channel).valid) {
+    return WIFI_CHANNEL_CONTEXT_UNSUPPORTED;
+  }
+  return configured_channel == received_channel ? WIFI_CHANNEL_CONTEXT_MATCH
+                                                 : WIFI_CHANNEL_CONTEXT_MISMATCH;
+}
+
+void wifi_signed_aggregate_add(wifi_signed_aggregate_t *aggregate,
+                               int32_t value) {
+  if (aggregate == NULL || aggregate->saturated) {
+    return;
+  }
+  if (aggregate->samples == UINT64_MAX ||
+      (value > 0 && aggregate->sum > INT64_MAX - value) ||
+      (value < 0 && aggregate->sum < INT64_MIN - value)) {
+    aggregate->saturated = true;
+    return;
+  }
+  if (aggregate->samples == 0U || value < aggregate->minimum) {
+    aggregate->minimum = value;
+  }
+  if (aggregate->samples == 0U || value > aggregate->maximum) {
+    aggregate->maximum = value;
+  }
+  aggregate->sum += value;
+  ++aggregate->samples;
+}
+
+wifi_controlled_source_result_t wifi_match_controlled_ap_beacon(
+    const wifi_layout_result_t *parsed,
+    const wifi_address_result_t *addresses,
+    const uint8_t expected_transmitter[WIFI_ADDRESS_OCTETS],
+    const uint8_t expected_bssid[WIFI_ADDRESS_OCTETS]) {
+  if (parsed == NULL || addresses == NULL || expected_transmitter == NULL ||
+      expected_bssid == NULL || parsed->status != WIFI_PARSE_OK ||
+      addresses->status != WIFI_PARSE_OK) {
+    return WIFI_CONTROLLED_SOURCE_INVALID;
+  }
+  /* IEEE 802.11 management subtype 8 is Beacon.  Do not accept another
+   * class/subtype merely because it happens to expose address roles. */
+  if (parsed->frame_control.type != 0U ||
+      parsed->frame_control.subtype != 8U) {
+    return WIFI_CONTROLLED_SOURCE_WRONG_SUBTYPE;
+  }
+  if (!addresses->transmitter.valid || !addresses->bssid.valid) {
+    return WIFI_CONTROLLED_SOURCE_ROLE_UNAVAILABLE;
+  }
+  if (memcmp(addresses->transmitter.octets, expected_transmitter,
+             WIFI_ADDRESS_OCTETS) != 0 ||
+      memcmp(addresses->bssid.octets, expected_bssid,
+             WIFI_ADDRESS_OCTETS) != 0) {
+    return WIFI_CONTROLLED_SOURCE_NONMATCH;
+  }
+  return WIFI_CONTROLLED_SOURCE_MATCH;
+}
+
 wifi_parse_status_t wifi_validate_callback_class(uint8_t callback_class,
                                                  uint8_t frame_type) {
   if (callback_class > WIFI_CALLBACK_MISC || frame_type > 3U) {

@@ -1,6 +1,6 @@
 # PROJECT BLACKSHEEP Sensors — Versioned Development Roadmap
 
-**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–4 complete
+**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–4 complete; Stage 5 implemented/provisionally characterized with integrated qualification pending Stage 9
 **Repository:** `sudorgherd/blacksheep-sensors`
 **Initial hardware:** 2× ESP32-C5 development boards
 **Target integration point:** ARGUS REDLINE v1.0
@@ -110,6 +110,15 @@ without defining identity or retention behavior.
 Stage 4 completed bounded Sequence Control and Retry/More-Fragments/Protected
 protocol-fact characterization without deduplication, reassembly, decryption,
 or behavioral conclusions.
+Stage 5 RF-context and length-reliability substrate is implemented and
+provisionally characterized. Controlled dual-band residential Beacon evidence
+supports conditional RSSI, channel, band, and derived-frequency use while noise
+floor and `dump_len` remain Experimental. Stage 5 is not complete under its
+original physical gate: orientation, traffic-labelled noise, expanded known
+lengths, formal measured geometry, and any missing band/stability evidence are
+preserved for Stage 9 integrated semi-deployment qualification. This explicit
+sequencing checkpoint permits Stages 6–8 to proceed without erasing or relaxing
+the original criteria.
 
 ## v0.3.0 — Sensor Observation Model
 
