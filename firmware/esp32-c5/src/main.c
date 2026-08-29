@@ -44,7 +44,11 @@ static const uint8_t stage5_controlled_bssid[WIFI_ADDRESS_OCTETS] =
 #endif
 
 #ifndef SENSOR_ROLE
-#if defined(WIFI_STAGE7_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#if defined(WIFI_STAGE8_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
+#define SENSOR_ROLE "C5_5GHZ_V020_STAGE8"
+#elif defined(WIFI_STAGE8_CAPTURE)
+#define SENSOR_ROLE "C5_24GHZ_V020_STAGE8"
+#elif defined(WIFI_STAGE7_CAPTURE) && defined(WIFI_VALIDATION_5GHZ)
 #define SENSOR_ROLE "C5_5GHZ_V020_STAGE7"
 #elif defined(WIFI_STAGE7_CAPTURE)
 #define SENSOR_ROLE "C5_24GHZ_V020_STAGE7"
@@ -363,6 +367,9 @@ typedef struct {
   uint64_t phy_siga2_valid;
   uint64_t phy_sigb_length_valid;
   uint64_t phy_channel_estimate_valid;
+#ifdef WIFI_STAGE8_CAPTURE
+  uint64_t oui_role_eligibility[3][5];
+#endif
 #endif
 #endif
 #endif
@@ -632,6 +639,17 @@ static void stage1_worker(void *unused) {
           for (size_t role = 0; role < sizeof(roles) / sizeof(roles[0]); ++role) {
             if (roles[role]->valid) stage1_increment(&stage1_stats.role_valid[role]);
           }
+#ifdef WIFI_STAGE8_CAPTURE
+          const wifi_address_role_t *oui_roles[] = {
+              &addresses.transmitter, &addresses.source, &addresses.bssid};
+          for (size_t role = 0;
+               role < sizeof(oui_roles) / sizeof(oui_roles[0]); ++role) {
+            const wifi_oui_eligibility_t eligibility =
+                wifi_oui_eligibility_for_role(oui_roles[role]);
+            stage1_increment(
+                &stage1_stats.oui_role_eligibility[role][eligibility]);
+          }
+#endif
           const wifi_address_class_t addr1_class =
               wifi_classify_address(&addresses.raw[0]);
           stage1_increment(&stage1_stats.addr1_class[addr1_class]);
@@ -1249,6 +1267,24 @@ static bool wifi_band_validation(void) {
          summary.phy_rate_kind[WIFI_PHY_RATE_UNAVAILABLE],
          summary.phy_rate_kind[WIFI_PHY_RATE_11B],
          summary.phy_rate_kind[WIFI_PHY_RATE_LSIG]);
+#ifdef WIFI_STAGE8_CAPTURE
+  const char *const oui_role_names[] = {"transmitter", "source", "bssid"};
+  for (size_t role = 0;
+       role < sizeof(oui_role_names) / sizeof(oui_role_names[0]); ++role) {
+    printf("Stage 8 %s eligibility: unavailable=%" PRIu64
+           " broadcast=%" PRIu64 " group=%" PRIu64
+           " eligible-global-individual=%" PRIu64
+           " local-individual=%" PRIu64 "\n",
+           oui_role_names[role],
+           summary.oui_role_eligibility[role][WIFI_OUI_INELIGIBLE_UNAVAILABLE],
+           summary.oui_role_eligibility[role][WIFI_OUI_INELIGIBLE_BROADCAST],
+           summary.oui_role_eligibility[role][WIFI_OUI_INELIGIBLE_GROUP],
+           summary.oui_role_eligibility[role]
+                                       [WIFI_OUI_ELIGIBLE_GLOBAL_INDIVIDUAL],
+           summary.oui_role_eligibility[role]
+                                       [WIFI_OUI_INELIGIBLE_LOCAL_INDIVIDUAL]);
+  }
+#endif
   printf("Stage 7 Beacon formats: 11b=%" PRIu64 " 11a/g=%" PRIu64
          " HT=%" PRIu64 " VHT=%" PRIu64 " HE-SU=%" PRIu64 "\n",
          summary.beacon_phy_format[WIFI_PHY_FORMAT_11B],
@@ -1382,6 +1418,8 @@ static bool wifi_band_validation(void) {
   printf("Wi-Fi shutdown: PASS\n");
 #ifdef WIFI_CHANNEL_CONTROL_VALIDATION
   printf("Wi-Fi channel-control validation: %s\n",
+#elif defined(WIFI_STAGE8_CAPTURE)
+  printf("Wi-Fi v0.2.0 Stage 8 validation: %s\n",
 #elif defined(WIFI_STAGE7_CAPTURE)
   printf("Wi-Fi v0.2.0 Stage 7 validation: %s\n",
 #elif defined(WIFI_STAGE6_CAPTURE)

@@ -1,6 +1,6 @@
 # PROJECT BLACKSHEEP Sensors — Versioned Development Roadmap
 
-**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–4 and Stages 6–7 complete; Stage 5 implemented/provisionally characterized with integrated qualification pending Stage 9
+**Status:** Early development; v0.1.0 and v0.2.0 Stages 1–4 and Stages 6–8 complete; Stage 5 implemented/provisionally characterized with integrated qualification pending Stage 9
 **Repository:** `sudorgherd/blacksheep-sensors`
 **Initial hardware:** 2× ESP32-C5 development boards
 **Target integration point:** ARGUS REDLINE v1.0
@@ -128,6 +128,12 @@ cross-C5/cross-node synchronization.
 Stage 6 is complete after exact host wrap/injected-clock coverage, controlled
 periodic, representative, and burst validation on both bands, and the complete
 20-environment firmware regression.
+
+Stage 8 accepts global-individual registry eligibility with conditions, rejects
+attribution for local/group/broadcast/unavailable addresses, rejects embedded
+production registry lookup on each C5, and selects future host/control/server
+resolution with explicit dataset provenance and failure states. A registry
+match is an address-block assignment hint, never manufacturer or identity proof.
 
 For intermediate Stages 7–8, validation uses the complete host/randomized
 regression, clean current-stage dual-band builds, directly relevant historical

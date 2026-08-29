@@ -1,4 +1,5 @@
 #include "wifi_frame_parser.h"
+#include "stage8_oui_feasibility.h"
 
 #include <assert.h>
 #include <limits.h>
@@ -738,6 +739,117 @@ static void test_stage7_phy_metadata(void) {
   CHECK(!vht_mu.sigb_length_valid);
 }
 
+static void test_stage8_oui_feasibility(void) {
+  static const stage8_assignment_entry_t entries[] = {
+      {{0x00U, 0x10U, 0x20U, 0U, 0U, 0U}, 24U, "Synthetic MA-L"},
+      {{0x00U, 0x10U, 0x20U, 0xa0U, 0U, 0U}, 28U, "Synthetic MA-M"},
+      {{0x00U, 0x10U, 0x20U, 0xabU, 0xc0U, 0U}, 36U, "Synthetic MA-S"},
+  };
+  const stage8_assignment_dataset_t dataset = {
+      STAGE8_DATASET_API_VERSION, entries,
+      sizeof(entries) / sizeof(entries[0])};
+  const uint8_t known_octets[][WIFI_ADDRESS_OCTETS] = {
+      {0x00U, 0x10U, 0x20U, 0x01U, 0x02U, 0x03U},
+      {0x00U, 0x10U, 0x20U, 0xa1U, 0x02U, 0x03U},
+      {0x00U, 0x10U, 0x20U, 0xabU, 0xc1U, 0x03U},
+  };
+  const uint8_t expected_bits[] = {24U, 28U, 36U};
+  const char *const expected_labels[] = {
+      "Synthetic MA-L", "Synthetic MA-M", "Synthetic MA-S"};
+  for (size_t index = 0U; index < 3U; ++index) {
+    wifi_address_t address = {.valid = true};
+    memcpy(address.octets, known_octets[index], WIFI_ADDRESS_OCTETS);
+    stage8_attribution_result_t result =
+        stage8_lookup_assignment(&address, &dataset);
+    CHECK(result.status == STAGE8_ATTRIBUTION_ASSIGNMENT_HINT);
+    CHECK(result.eligibility == WIFI_OUI_ELIGIBLE_GLOBAL_INDIVIDUAL);
+    CHECK(result.assignment_valid);
+    CHECK(result.matched_prefix_bits == expected_bits[index]);
+    CHECK(strcmp(result.assignment_label, expected_labels[index]) == 0);
+    CHECK(result.assignment_label != entries[index].assignment_label);
+  }
+
+  wifi_address_t unknown = {
+      .valid = true, .octets = {0x00U, 0x99U, 0x88U, 1U, 2U, 3U}};
+  stage8_attribution_result_t result =
+      stage8_lookup_assignment(&unknown, &dataset);
+  CHECK(result.status == STAGE8_ATTRIBUTION_ELIGIBLE_UNKNOWN);
+  CHECK(result.eligibility == WIFI_OUI_ELIGIBLE_GLOBAL_INDIVIDUAL);
+  CHECK(!result.assignment_valid && result.matched_prefix_bits == 0U);
+  CHECK(result.assignment_label[0] == '\0');
+
+  const wifi_address_t ineligible[] = {
+      {.valid = false},
+      {.valid = true,
+       .octets = {0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU}},
+      {.valid = true, .octets = {0x01U, 0U, 0U, 0U, 0U, 1U}},
+      {.valid = true, .octets = {0x02U, 0U, 0U, 0U, 0U, 1U}},
+  };
+  const wifi_oui_eligibility_t reasons[] = {
+      WIFI_OUI_INELIGIBLE_UNAVAILABLE, WIFI_OUI_INELIGIBLE_BROADCAST,
+      WIFI_OUI_INELIGIBLE_GROUP, WIFI_OUI_INELIGIBLE_LOCAL_INDIVIDUAL};
+  for (size_t index = 0U; index < 4U; ++index) {
+    result = stage8_lookup_assignment(&ineligible[index], &dataset);
+    CHECK(result.status == STAGE8_ATTRIBUTION_INELIGIBLE);
+    CHECK(result.eligibility == reasons[index]);
+    CHECK(!result.assignment_valid && result.matched_prefix_bits == 0U);
+    CHECK(result.assignment_label[0] == '\0');
+  }
+  result = stage8_lookup_assignment(NULL, &dataset);
+  CHECK(result.status == STAGE8_ATTRIBUTION_INELIGIBLE);
+  CHECK(result.eligibility == WIFI_OUI_INELIGIBLE_UNAVAILABLE);
+
+  result = stage8_lookup_assignment(&unknown, NULL);
+  CHECK(result.status == STAGE8_ATTRIBUTION_DATASET_UNAVAILABLE);
+  CHECK(!result.assignment_valid && result.assignment_label[0] == '\0');
+  const stage8_assignment_dataset_t missing = {
+      STAGE8_DATASET_API_VERSION, NULL, 0U};
+  result = stage8_lookup_assignment(&unknown, &missing);
+  CHECK(result.status == STAGE8_ATTRIBUTION_DATASET_UNAVAILABLE);
+  const stage8_assignment_dataset_t incompatible = {
+      STAGE8_DATASET_API_VERSION + 1U, entries,
+      sizeof(entries) / sizeof(entries[0])};
+  result = stage8_lookup_assignment(&unknown, &incompatible);
+  CHECK(result.status == STAGE8_ATTRIBUTION_DATASET_INCOMPATIBLE);
+  CHECK(!result.assignment_valid && result.matched_prefix_bits == 0U);
+
+  for (unsigned classification = WIFI_ADDRESS_CLASS_INVALID;
+       classification <= WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL;
+       ++classification) {
+    const wifi_oui_eligibility_t eligibility =
+        wifi_oui_eligibility_for_class((wifi_address_class_t)classification);
+    CHECK((classification == WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL) ==
+          (eligibility == WIFI_OUI_ELIGIBLE_GLOBAL_INDIVIDUAL));
+  }
+  CHECK(wifi_oui_eligibility_for_class((wifi_address_class_t)255) ==
+        WIFI_OUI_INELIGIBLE_UNAVAILABLE);
+
+  for (unsigned first_octet = 0U; first_octet <= UINT8_MAX; ++first_octet) {
+    wifi_address_t boundary = {
+        .valid = true,
+        .octets = {(uint8_t)first_octet, 0U, 0U, 0U, 0U, 1U}};
+    const wifi_oui_eligibility_t eligibility =
+        wifi_oui_eligibility_for_address(&boundary);
+    const bool expected_eligible = (first_octet & 0x03U) == 0U;
+    CHECK((eligibility == WIFI_OUI_ELIGIBLE_GLOBAL_INDIVIDUAL) ==
+          expected_eligible);
+  }
+
+  static const stage8_assignment_entry_t unterminated_entry = {
+      {0x00U, 0x33U, 0x44U, 0U, 0U, 0U}, 24U,
+      {'X', 'X', 'X', 'X', 'X', 'X', 'X', 'X',
+       'X', 'X', 'X', 'X', 'X', 'X', 'X', 'X',
+       'X', 'X', 'X', 'X', 'X', 'X', 'X', 'X'}};
+  const stage8_assignment_dataset_t unterminated_dataset = {
+      STAGE8_DATASET_API_VERSION, &unterminated_entry, 1U};
+  wifi_address_t unterminated_match = {
+      .valid = true, .octets = {0x00U, 0x33U, 0x44U, 1U, 2U, 3U}};
+  result = stage8_lookup_assignment(&unterminated_match,
+                                    &unterminated_dataset);
+  CHECK(result.status == STAGE8_ATTRIBUTION_ASSIGNMENT_HINT);
+  CHECK(result.assignment_label[STAGE8_ASSIGNMENT_LABEL_MAX - 1U] == '\0');
+}
+
 static void test_randomized(void) {
   uint8_t bytes[WIFI_CAPTURE_PREFIX_MAX]; uint32_t state = 0x6d2b79f5U;
   for (unsigned n = 0; n < 100000; ++n) {
@@ -815,6 +927,19 @@ static void test_randomized(void) {
           (raw_format >= WIFI_PHY_FORMAT_HE_SU &&
            raw_format <= WIFI_PHY_FORMAT_HE_TB));
     CHECK(!phy.sigb_length_valid || raw_format == WIFI_PHY_FORMAT_HE_MU);
+    wifi_address_t random_address = {.valid = length >= WIFI_ADDRESS_OCTETS};
+    if (random_address.valid) {
+      memcpy(random_address.octets, bytes, WIFI_ADDRESS_OCTETS);
+    }
+    const wifi_oui_eligibility_t eligibility =
+        wifi_oui_eligibility_for_address(&random_address);
+    const stage8_attribution_result_t attribution =
+        stage8_lookup_assignment(&random_address, NULL);
+    CHECK(eligibility <= WIFI_OUI_INELIGIBLE_LOCAL_INDIVIDUAL);
+    CHECK((eligibility == WIFI_OUI_ELIGIBLE_GLOBAL_INDIVIDUAL) ==
+          (attribution.status == STAGE8_ATTRIBUTION_DATASET_UNAVAILABLE));
+    CHECK(!attribution.assignment_valid);
+    CHECK(attribution.assignment_label[0] == '\0');
   }
 }
 
@@ -831,6 +956,7 @@ int main(void) {
   test_stage6_timing_golden_vectors();
   test_stage6_injected_discontinuities();
   test_stage7_phy_metadata();
+  test_stage8_oui_feasibility();
   test_randomized();
   printf("PASS: %u assertions; event=%zu bytes; queue=%zu bytes\n",
          tests_run, sizeof(wifi_capture_event_t), sizeof(wifi_capture_queue_t));

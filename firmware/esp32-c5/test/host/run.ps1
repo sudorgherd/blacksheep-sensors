@@ -8,6 +8,7 @@ $Arguments = @(
   '-fsanitize=address,undefined', '-fno-omit-frame-pointer',
   "-I$(Join-Path $Library 'include')",
   (Join-Path $Library 'src\wifi_frame_parser.c'),
+  (Join-Path $PSScriptRoot 'stage8_oui_feasibility.c'),
   (Join-Path $PSScriptRoot 'test_wifi_frame_parser.c'),
   '-o', $Output
 )
@@ -18,6 +19,7 @@ if ($LASTEXITCODE -ne 0) {
     '-std=c11', '-Wall', '-Wextra', '-Werror', '-pedantic', '-O2',
     "-I$(Join-Path $Library 'include')",
     (Join-Path $Library 'src\wifi_frame_parser.c'),
+    (Join-Path $PSScriptRoot 'stage8_oui_feasibility.c'),
     (Join-Path $PSScriptRoot 'test_wifi_frame_parser.c'),
     '-o', $Output
   )

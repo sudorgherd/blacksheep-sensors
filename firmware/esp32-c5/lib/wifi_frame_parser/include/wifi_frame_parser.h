@@ -128,6 +128,14 @@ typedef enum {
 } wifi_address_class_t;
 
 typedef enum {
+  WIFI_OUI_INELIGIBLE_UNAVAILABLE = 0,
+  WIFI_OUI_INELIGIBLE_BROADCAST,
+  WIFI_OUI_INELIGIBLE_GROUP,
+  WIFI_OUI_ELIGIBLE_GLOBAL_INDIVIDUAL,
+  WIFI_OUI_INELIGIBLE_LOCAL_INDIVIDUAL
+} wifi_oui_eligibility_t;
+
+typedef enum {
   WIFI_GROUP_COMPARE_BOTH_INDIVIDUAL = 0,
   WIFI_GROUP_COMPARE_BOTH_GROUP,
   WIFI_GROUP_COMPARE_BROADCAST_DRIVER_GROUP,
@@ -341,6 +349,12 @@ wifi_address_result_t wifi_resolve_addresses(
     const uint8_t *bytes, size_t length, const wifi_layout_result_t *parsed);
 wifi_address_class_t wifi_classify_address(const wifi_address_t *address);
 wifi_address_class_t wifi_classify_role(const wifi_address_role_t *role);
+wifi_oui_eligibility_t wifi_oui_eligibility_for_class(
+    wifi_address_class_t classification);
+wifi_oui_eligibility_t wifi_oui_eligibility_for_address(
+    const wifi_address_t *address);
+wifi_oui_eligibility_t wifi_oui_eligibility_for_role(
+    const wifi_address_role_t *role);
 wifi_group_comparison_t wifi_compare_driver_group(
     bool driver_is_group, const wifi_address_result_t *addresses);
 wifi_control_attributes_t wifi_parse_control_attributes(

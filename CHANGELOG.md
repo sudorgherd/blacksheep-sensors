@@ -5,6 +5,10 @@ All notable changes to PROJECT BLACKSHEEP Sensors will be documented here.
 ## Unreleased
 
 ### Added
+- v0.2.0 Stage 8 completed with fail-closed OUI/registry eligibility,
+  deterministic variable-prefix host feasibility tests, aggregate-only
+  dual-band evidence, and a future host/control lookup decision that rejects
+  manufacturer and identity claims
 - v0.2.0 Stage 7 completed with fail-closed public ESP32-C5 PHY-format
   normalization, conditional rate/raw-SIG scalar handling, both-band physical
   evidence, and no private ESP-IDF dependencies or raw-SIG decoder

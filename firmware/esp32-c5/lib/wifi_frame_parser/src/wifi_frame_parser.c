@@ -374,6 +374,33 @@ wifi_address_class_t wifi_classify_role(const wifi_address_role_t *role) {
   return wifi_classify_address(&address);
 }
 
+wifi_oui_eligibility_t wifi_oui_eligibility_for_class(
+    wifi_address_class_t classification) {
+  switch (classification) {
+    case WIFI_ADDRESS_CLASS_BROADCAST:
+      return WIFI_OUI_INELIGIBLE_BROADCAST;
+    case WIFI_ADDRESS_CLASS_GROUP:
+      return WIFI_OUI_INELIGIBLE_GROUP;
+    case WIFI_ADDRESS_CLASS_GLOBAL_INDIVIDUAL:
+      return WIFI_OUI_ELIGIBLE_GLOBAL_INDIVIDUAL;
+    case WIFI_ADDRESS_CLASS_LOCAL_INDIVIDUAL:
+      return WIFI_OUI_INELIGIBLE_LOCAL_INDIVIDUAL;
+    case WIFI_ADDRESS_CLASS_INVALID:
+    default:
+      return WIFI_OUI_INELIGIBLE_UNAVAILABLE;
+  }
+}
+
+wifi_oui_eligibility_t wifi_oui_eligibility_for_address(
+    const wifi_address_t *address) {
+  return wifi_oui_eligibility_for_class(wifi_classify_address(address));
+}
+
+wifi_oui_eligibility_t wifi_oui_eligibility_for_role(
+    const wifi_address_role_t *role) {
+  return wifi_oui_eligibility_for_class(wifi_classify_role(role));
+}
+
 wifi_group_comparison_t wifi_compare_driver_group(
     bool driver_is_group, const wifi_address_result_t *addresses) {
   if (addresses == NULL || addresses->status != WIFI_PARSE_OK ||
